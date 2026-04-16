@@ -17,7 +17,6 @@ Voltra Controller is designed to feel like a practical daily-use companion for t
 - see live device state, battery, and workout counters
 - export logs when something needs debugging
 - optionally publish live state to MQTT for local automation setups
-- optionally expose local HTTP control and state endpoints for relay use on your own network
 
 The app is intentionally local-first. It focuses on direct device control, local preferences, and user-visible diagnostics instead of account flows or cloud features.
 
@@ -75,7 +74,6 @@ The app is intentionally local-first. It focuses on direct device control, local
 - parsed state logging
 - local log export and sharing
 - optional MQTT Sensor support from the More screen
-- optional HTTP Gateway support from the More screen
 
 ### UI And Device Support
 
@@ -101,7 +99,7 @@ Voltra Controller is already usable, but a few areas are still actively being re
 4. Scan for the Voltra and connect.
 5. Choose a mode from the Home screen.
 6. Use the control screen for that mode to adjust settings, then load or unload from the app.
-7. Use the More menu for theme settings, MQTT Sensor, HTTP Gateway, and log sharing.
+7. Use the More menu for theme settings, MQTT Sensor, and log sharing.
 
 ## Using The App
 
@@ -131,7 +129,6 @@ The More menu is where the app keeps the less frequently used tools:
 
 - theme selection
 - MQTT Sensor settings
-- HTTP Gateway settings
 - diagnostics access
 - log sharing
 
@@ -148,22 +145,6 @@ MQTT is:
 
 If MQTT is not enabled, the app behaves as a normal direct-control Bluetooth app.
 
-## HTTP Gateway
-
-Voltra Controller also includes an optional local HTTP gateway for people who want to:
-
-- send commands with `curl`
-- integrate with Node-RED or local scripts
-- use the phone as a Bluetooth-to-LAN relay
-- pull live state from another local service
-
-The HTTP Gateway is:
-
-- optional
-- disabled by default
-- authenticated with a local access key
-- intended for your own LAN and self-hosted workflows
-
 ## Privacy And Permissions
 
 Voltra Controller is built around direct local control.
@@ -179,9 +160,9 @@ Voltra Controller is built around direct local control.
 
 - **Bluetooth / Nearby Devices**: required to scan for and connect to the Voltra
 - **Notifications**: used for the foreground connection service while actively connected
-- **Network**: only relevant for optional MQTT Sensor and HTTP Gateway use
+- **Network**: only relevant for optional MQTT Sensor use
 
-Local preferences, last device info, and diagnostics remain on the device unless you explicitly export, share, or enable one of the optional network features.
+Local preferences, last device info, and diagnostics remain on the device unless you explicitly export or share them.
 
 ## Safety
 
@@ -225,18 +206,17 @@ This project is now a working alpha:
 - protocol coverage is still expanding
 - polish and validation are still ongoing before a broader release
 
-Play Store publication is now in progress as the alpha settles into a more stable release shape.
+Play Store publication is a goal once the alpha has settled into a more stable release shape.
 
 ## Project Docs
 
-Additional project docs live in this repository:
+Additional project docs live in the Android folder:
 
-- [Privacy Policy](./PRIVACY_POLICY.md)
-- [HTTP Gateway](./HTTP_GATEWAY.md)
-- [Play Store Beta Flow](./PLAYSTORE_BETA.md)
-- [Wishlist Status](./WISHLIST_STATUS.md)
-- [Capture Checklist](./CAPTURE_CHECKLIST.md)
-- [Protocol Notes](./PROTOCOL_NOTES.md)
+- [Android README](./android/README.md)
+- [Privacy Policy](./android/PRIVACY_POLICY.md)
+- [Wishlist Status](./android/WISHLIST_STATUS.md)
+- [Capture Checklist](./android/CAPTURE_CHECKLIST.md)
+- [Protocol Notes](./android/PROTOCOL_NOTES.md)
 
 ## Credits
 
