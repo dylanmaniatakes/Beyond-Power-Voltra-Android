@@ -2,6 +2,8 @@
 
 Voltra Controller is a local-first Android app for controlling a Voltra over Bluetooth without requiring an account, subscription, or cloud login.
 
+It was made by using BLE capture data and a measure of vibecoding. I have a measure of knowledge in programming and RF technologies but android development is still new to me. 
+
 Source repository: [github.com/dylanmaniatakes/Beyond-Power-Voltra-Android](https://github.com/dylanmaniatakes/Beyond-Power-Voltra-Android)
 
 This project is currently in a working alpha state. The core control path is live and usable, while some advanced features are still being refined.
