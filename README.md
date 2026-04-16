@@ -237,7 +237,4 @@ Additional project docs live in this repository:
 - [Wishlist Status](./WISHLIST_STATUS.md)
 - [Capture Checklist](./CAPTURE_CHECKLIST.md)
 - [Protocol Notes](./PROTOCOL_NOTES.md)
-
-## Credits
-
-Created and maintained by Dylan Maniatakes / Technogizguy.
+- [SDK Research Notes](./SDK_RESEARCH_NOTES.md)

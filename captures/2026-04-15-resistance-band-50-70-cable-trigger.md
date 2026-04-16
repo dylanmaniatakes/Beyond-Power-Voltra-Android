@@ -1,6 +1,6 @@
 # 2026-04-15 iPad Capture: Resistance Band 50/70 and Cable Trigger
 
-Source: `/Users/ticnitsi/Downloads/sysdiagnose_2026.04.15_15-35-05-0400_iPhone-OS_iPad_22F76.tar.gz`
+Source: local sysdiagnose export `sysdiagnose_2026.04.15_15-35-05-0400_iPhone-OS_iPad_22F76.tar.gz`
 
 Primary PacketLogger file: `logs/Bluetooth/bluetoothd-hci-latest.pklg`
 

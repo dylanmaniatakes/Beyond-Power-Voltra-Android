@@ -27,7 +27,7 @@ class VoltraPacketParserTest {
     fun parsesCapturedDeviceNameResponse() {
         val packet = assertNotNull(
             VoltraPacketParser.parse(
-                "552a083f1001000020004f0044796c616e20566f6c7472612031000000000000001020ba9705da027346".hexToByteArray(),
+                "552a083f1001000020004f00566f6c74726120556e6974203031000000000000001020ba9705da027346".hexToByteArray(),
             ),
         )
 
@@ -35,7 +35,7 @@ class VoltraPacketParserTest {
         assertEquals(0x10, packet.senderId)
         assertEquals(0x01, packet.receiverId)
         assertEquals(0x4F, packet.commandId)
-        assertTrue(packet.payloadAscii.orEmpty().contains("Dylan Voltra 1"))
+        assertTrue(packet.payloadAscii.orEmpty().contains("Voltra Unit 01"))
     }
 
     @Test

@@ -1,12 +1,12 @@
 # 2026-04-15 Android Diagnostic: Dynamic Chains And Eccentric Limits
 
-Source: `/Users/ticnitsi/Downloads/text-0 23.txt`
+Source: local exported text log `text-0 23.txt`
 
-Follow-up sources: `/Users/ticnitsi/Downloads/text-0 24.txt`, `/Users/ticnitsi/Downloads/text-0 25.txt`
+Follow-up sources: local exported text logs `text-0 24.txt`, `text-0 25.txt`
 
 ## Summary
 
-- Android connected to `Dylan Voltra 1` with the validated command protocol.
+- Android connected to the test VOLTRA with the validated command protocol.
 - Parsed readings showed base weight `172 lb`, Chains `28 lb`, Eccentric `0 lb`, and `Strength ready, session active`.
 - The base-plus-chains total was exactly `200 lb`, confirming Chains should not use the first captured `0..30 lb` range.
 - Follow-up Android diagnostics showed the device also caps Chains to the current base load. At `45 lb`, attempted Chains values above `45 lb` were acknowledged but echoed back as `45 lb`.

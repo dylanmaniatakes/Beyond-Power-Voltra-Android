@@ -34,11 +34,11 @@ Keep this file somewhere safe and backed up.
 
 Copy:
 
-`android/keystore.properties.example`
+`keystore.properties.example`
 
 to:
 
-`android/keystore.properties`
+`keystore.properties`
 
 Then set:
 
@@ -56,7 +56,7 @@ You can also provide the same values with environment variables:
 
 ## 3. Build The Play Bundle
 
-From the `android/` directory:
+From the repository root:
 
 ```bash
 ./gradlew bundlePlayRelease
@@ -64,7 +64,7 @@ From the `android/` directory:
 
 If signing is configured correctly, the signed bundle will be created at:
 
-`android/app/build/outputs/bundle/release/app-release.aab`
+`app/build/outputs/bundle/release/app-release.aab`
 
 ## 4. Upload To Play Console
 
@@ -80,7 +80,7 @@ Recommended flow:
 
 Current package version:
 
-- `versionCode = 103`
+- `versionCode = 104`
 - `versionName = 1.3`
 
 User-facing in-app label:

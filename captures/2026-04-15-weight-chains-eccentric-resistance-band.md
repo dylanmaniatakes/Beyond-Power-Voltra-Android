@@ -1,6 +1,6 @@
 # 2026-04-15 iPad Capture: Weight, Chains, Eccentric, Resistance Band
 
-Source: `/Users/ticnitsi/Downloads/sysdiagnose_2026.04.15_09-15-04-0400_iPhone-OS_iPad_22F76.tar.gz`
+Source: local sysdiagnose export `sysdiagnose_2026.04.15_09-15-04-0400_iPhone-OS_iPad_22F76.tar.gz`
 
 Primary PacketLogger file: `logs/Bluetooth/bluetoothd-hci-latest.pklg`
 

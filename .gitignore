@@ -1,7 +1,16 @@
 .gradle/
 .kotlin/
+.idea/
 **/build/
 local.properties
+.DS_Store
+captures/raw/
+captures/tmp/
+*.log
+*.tmp
 keystore.properties
+/keystore/
 *.jks
 *.keystore
+*.p12
+*.pem

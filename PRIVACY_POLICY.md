@@ -166,8 +166,8 @@ When the policy changes, the updated version should be published with a new effe
 
 ## Contact
 
-Voltra Controller is maintained by Dylan Maniatakes / Technogizguy.
-
 Project repository:
 
 - https://github.com/dylanmaniatakes/Beyond-Power-Voltra-Android
+
+Privacy questions, bug reports, and policy updates should be handled through the project repository.

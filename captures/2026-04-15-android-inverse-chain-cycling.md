@@ -1,6 +1,6 @@
 # 2026-04-15 Android Diagnostic: Inverse Chains Cycling
 
-Source: `/Users/ticnitsi/Downloads/text-0 31.txt`
+Source: local exported text log `text-0 31.txt`
 
 ## Summary
 

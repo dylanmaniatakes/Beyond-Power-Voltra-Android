@@ -5,7 +5,7 @@
 - `../ANDROID_PORT_ANALYSIS.md`
 - `../ios/BPBLECommunicator_BPBLECommunicator.bundle/paramInfo.csv`
 - `../ios/EPRefactor` Swift metadata strings
-- `/Users/ticnitsi/Downloads/Payload/EPRefactor.app/EPRefactor` Swift metadata strings from the decrypted IPA
+- locally exported decrypted IPA Mach-O metadata
 - Vendor behavior docs for mode semantics only, not BLE command inference. URLs intentionally omitted here to keep the app documentation vendor-name neutral.
 
 ## Confirmed So Far
@@ -32,7 +32,7 @@
   - Read-only connect disconnected with VOLTRA-initiated GATT status 19 after 5033 ms, after the two safe read labels above were captured.
 - Three later exports repeated the same pattern: sessions ended after 5079 ms, 5110 ms, and 5036 ms with status 19. Those exports also showed earlier `CmdTxRx` read frames under newer session headers, so diagnostics now split latest-session frames/commands from earlier captures.
 - The working hypothesis is that the official app sends `commonHandshake` and/or `commonConnectRequest` within roughly five seconds. Until that frame envelope is recovered from the real Mach-O, Android should treat a short-lived GATT connection as unvalidated and keep controls locked.
-- Hopper exports loaded from the `.ipa` ZIP as RAW ARM/v6 are not useful for protocol recovery. The useful target is the Mach-O at `/Users/ticnitsi/Downloads/Payload/EPRefactor.app/EPRefactor`, loaded as Mach-O arm64/AArch64 with Swift metadata.
+- Hopper exports loaded from the `.ipa` ZIP as RAW ARM/v6 are not useful for protocol recovery. The useful target is the decrypted Mach-O binary, loaded as Mach-O arm64/AArch64 with Swift metadata.
 - A later Hopper export loaded the `.ipa` ZIP as RAW x86_64 and produced a small BinExport with no `BPBLE`, `BPSDK`, VOLTRA UUID, or handshake strings. That export is also not useful for protocol recovery.
 - `otool -oV` against the real Mach-O confirmed the relevant Swift/ObjC metadata:
   - `BPBLECommunicator.BPBLEVOLTRAPeripheral` stores `voltraCommandCharacteristic`, `voltraNotifyCharacteristic`, `voltraTransportCharacteristic`, `voltraJustWriteCharacteristic`, `senderID`, `handshakeFinish`, `bleAddrByteCount`, `voltraConnectRequestState`, `waitingForHandShakeNotifyDate`, and `supportNewWriteCharacteristic`.
@@ -71,7 +71,7 @@
   - `550e0466aa100100200077003889`, `550e0466aa10020020007701cc94`, `550e0466aa100300200019002b7e`, `550e0466aa1004002000ab01ad7a` (firmware/serial/activation/security read candidates)
   - `55130403AA10050020000F02002D4E5D1B8E20` (safe battery state read for `BMS_RSOC` params `0x4E2D` and `0x1B5D`; generated locally from the recovered frame builder)
 - Captured responses include:
-  - `cmd=0x4F` response with ASCII device name `Dylan Voltra 1`.
+  - `cmd=0x4F` response with an ASCII device name payload.
   - `cmd=0x77` responses containing strings such as `EP1.0`, `MainControlv1.6`, `MotorControl1.6`, `BMS1.5`, `ESP32-C3MINI-1`, and `PMU1.0`.
   - `cmd=0x19` response containing serial-like ASCII `B10267A2509130256`.
 - Android hardware test `text-0 14.txt` confirmed the read-only handshake probe works on the phone:
@@ -85,7 +85,7 @@
   - `cmd=0x77` page 2 starts with packet type `0x09`; its total frame length is `0x100 + lengthByte` (`0x177` / 375 bytes in the captured firmware response).
   - Protocol reassembly now waits for the full extended type-`0x09` tail before emitting the frame.
 - The Android app still keeps load/unload/force-changing controls locked. The new read-only handshake probe sends only captured official bootstrap/read requests so the phone can validate the connection path and notification parsing on real hardware.
-- Android hardware test `text-0 16.txt` confirmed full handshake probe on device `Dylan Voltra 1` (10:20:BA:97:05:DA). New findings:
+- Android hardware test `text-0 16.txt` confirmed full handshake probe on the test device (device name and MAC redacted). New findings:
   - Serial number in `cmd=0x19` response contains an `M` prefix: `MB10267A2509130256`. `SERIAL_REGEX` updated to `M?B[0-9A-Z]{10,}`.
   - `cmd=0x77` page 0 response contains `EP1.0` plus BP module markers. `FIRMWARE_REGEX` supports BP-prefixed version strings for later captures.
   - After the `cmd=0x27` handshake-finish ACK, the device pushes an unsolicited `cmd=0x10` notification (seq=41): `03 00 0A 52 00 00 0B 52 00 00 0C 52 1E 00` (14 bytes). Payload appears to be 3 parameter entries; meaning of param IDs 0x0A/0x0B/0x0C in this context is unknown.

@@ -39,7 +39,7 @@ android {
         applicationId = "com.technogizguy.voltra.controller"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 103
+        versionCode = 104
         versionName = "1.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -115,7 +115,7 @@ tasks.register("validatePlayUploadSigning") {
         check(hasPlayUploadSigning) {
             buildString {
                 appendLine("Play upload signing is not configured.")
-                appendLine("Create android/keystore.properties from android/keystore.properties.example")
+                appendLine("Create keystore.properties from keystore.properties.example")
                 appendLine("or set VOLTRA_UPLOAD_STORE_FILE / VOLTRA_UPLOAD_STORE_PASSWORD / VOLTRA_UPLOAD_KEY_ALIAS / VOLTRA_UPLOAD_KEY_PASSWORD.")
             }
         }
