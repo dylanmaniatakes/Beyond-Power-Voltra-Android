@@ -3,6 +3,7 @@ package com.technogizguy.voltra.controller
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import com.technogizguy.voltra.controller.http.HttpGatewayState
 import com.technogizguy.voltra.controller.mqtt.MqttPublisherState
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -38,11 +39,13 @@ class VoltraViewModel(
 ) : AndroidViewModel(application) {
     private val client = AppGraph.client
     private val mqttSensorPublisher = AppGraph.mqttSensorPublisher
+    private val httpGatewayServer = AppGraph.httpGatewayServer
     private val preferencesRepository = AppGraph.preferencesRepository
     private var scanJob: Job? = null
 
     val state: StateFlow<VoltraSessionState> = client.state
     val mqttState: StateFlow<MqttPublisherState> = mqttSensorPublisher.state
+    val httpGatewayState: StateFlow<HttpGatewayState> = httpGatewayServer.state
     val preferences: StateFlow<LocalPreferences> = preferencesRepository.preferences.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -310,6 +313,24 @@ class VoltraViewModel(
     fun saveMqttSettings(settings: MqttPreferences) {
         viewModelScope.launch {
             preferencesRepository.setMqttSettings(settings)
+        }
+    }
+
+    fun setHttpGatewayEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesRepository.setHttpGatewayEnabled(enabled)
+        }
+    }
+
+    fun saveHttpGatewaySettings(settings: HttpGatewayPreferences) {
+        viewModelScope.launch {
+            preferencesRepository.setHttpGatewaySettings(settings)
+        }
+    }
+
+    fun rotateHttpGatewayAccessKey() {
+        viewModelScope.launch {
+            preferencesRepository.rotateHttpGatewayAccessKey()
         }
     }
 

@@ -98,11 +98,14 @@ import androidx.navigation.compose.rememberNavController
 import com.technogizguy.voltra.controller.R
 import com.technogizguy.voltra.controller.AccentColor
 import com.technogizguy.voltra.controller.ControlModeUi
+import com.technogizguy.voltra.controller.HttpGatewayPreferences
 import com.technogizguy.voltra.controller.LocalPreferences
 import com.technogizguy.voltra.controller.MqttPreferences
 import com.technogizguy.voltra.controller.RuntimePermissionState
 import com.technogizguy.voltra.controller.VoltraViewModel
 import com.technogizguy.voltra.controller.WEIGHT_INCREMENT_OPTIONS
+import com.technogizguy.voltra.controller.http.HttpGatewayConnectionState
+import com.technogizguy.voltra.controller.http.HttpGatewayState
 import com.technogizguy.voltra.controller.mqtt.MqttPublisherConnectionState
 import com.technogizguy.voltra.controller.mqtt.MqttPublisherState
 import com.technogizguy.voltra.controller.model.RawVoltraFrame
@@ -448,6 +451,7 @@ fun VoltraControllerApp(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val mqttState by viewModel.mqttState.collectAsStateWithLifecycle()
+    val httpGatewayState by viewModel.httpGatewayState.collectAsStateWithLifecycle()
     val scanResults by viewModel.scanResults.collectAsStateWithLifecycle()
     val preferences by viewModel.preferences.collectAsStateWithLifecycle()
     val showAllDevices by viewModel.showAllDevices.collectAsStateWithLifecycle()
@@ -674,11 +678,15 @@ fun VoltraControllerApp(
                     MoreFeaturesScreen(
                         preferences = preferences,
                         mqttState = mqttState,
+                        httpGatewayState = httpGatewayState,
                         onSetAccentColor = viewModel::setAccentColor,
                         onSetInstantWeightApplyDefault = viewModel::setInstantWeightApplyDefault,
                         onSetDeveloperModeEnabled = viewModel::setDeveloperModeEnabled,
                         onSetMqttEnabled = viewModel::setMqttEnabled,
                         onSaveMqttSettings = viewModel::saveMqttSettings,
+                        onSetHttpGatewayEnabled = viewModel::setHttpGatewayEnabled,
+                        onSaveHttpGatewaySettings = viewModel::saveHttpGatewaySettings,
+                        onRotateHttpGatewayAccessKey = viewModel::rotateHttpGatewayAccessKey,
                         onPublishMqttNow = viewModel::publishMqttNow,
                         onOpenLogs = {
                             navController.navigate(Route.DIAGNOSTICS.path) {
@@ -1564,11 +1572,15 @@ private fun ControlScreen(
 private fun MoreFeaturesScreen(
     preferences: LocalPreferences,
     mqttState: MqttPublisherState,
+    httpGatewayState: HttpGatewayState,
     onSetAccentColor: (AccentColor) -> Unit,
     onSetInstantWeightApplyDefault: (Boolean) -> Unit,
     onSetDeveloperModeEnabled: (Boolean) -> Unit,
     onSetMqttEnabled: (Boolean) -> Unit,
     onSaveMqttSettings: (MqttPreferences) -> Unit,
+    onSetHttpGatewayEnabled: (Boolean) -> Unit,
+    onSaveHttpGatewaySettings: (HttpGatewayPreferences) -> Unit,
+    onRotateHttpGatewayAccessKey: () -> Unit,
     onPublishMqttNow: () -> Unit,
     onOpenLogs: () -> Unit,
     onShareDiagnostics: () -> Unit,
@@ -1594,6 +1606,13 @@ private fun MoreFeaturesScreen(
                 onSetMqttEnabled = onSetMqttEnabled,
                 onSaveMqttSettings = onSaveMqttSettings,
                 onPublishMqttNow = onPublishMqttNow,
+            )
+            HttpGatewayCard(
+                preferences = preferences,
+                gatewayState = httpGatewayState,
+                onSetHttpGatewayEnabled = onSetHttpGatewayEnabled,
+                onSaveHttpGatewaySettings = onSaveHttpGatewaySettings,
+                onRotateHttpGatewayAccessKey = onRotateHttpGatewayAccessKey,
             )
             VersionCard(
                 versionLabel = versionLabel,
@@ -1646,6 +1665,138 @@ private fun MoreFeaturesScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp), content = rightColumn)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun HttpGatewayCard(
+    preferences: LocalPreferences,
+    gatewayState: HttpGatewayState,
+    onSetHttpGatewayEnabled: (Boolean) -> Unit,
+    onSaveHttpGatewaySettings: (HttpGatewayPreferences) -> Unit,
+    onRotateHttpGatewayAccessKey: () -> Unit,
+) {
+    var portText by remember(preferences.httpGateway.port) { mutableStateOf(preferences.httpGateway.port.toString()) }
+    val parsedPort = portText.toIntOrNull()
+    val canSave = parsedPort != null && parsedPort in 1..65535
+    val statusColor = when (gatewayState.connectionState) {
+        HttpGatewayConnectionState.RUNNING -> MaterialTheme.colorScheme.primary
+        HttpGatewayConnectionState.STARTING -> MaterialTheme.colorScheme.tertiary
+        HttpGatewayConnectionState.ERROR -> MaterialTheme.colorScheme.error
+        HttpGatewayConnectionState.DISABLED -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val statusText = when (gatewayState.connectionState) {
+        HttpGatewayConnectionState.DISABLED -> "Disabled"
+        HttpGatewayConnectionState.STARTING -> "Starting on port ${gatewayState.port}"
+        HttpGatewayConnectionState.RUNNING -> "Listening on port ${gatewayState.port}"
+        HttpGatewayConnectionState.ERROR -> gatewayState.lastError ?: "HTTP gateway error"
+    }
+    val curlExampleUrl = gatewayState.urls.firstOrNull { it.startsWith("http://192.") || it.startsWith("http://10.") || it.startsWith("http://172.") }
+        ?: gatewayState.urls.firstOrNull()
+        ?: "http://127.0.0.1:${preferences.httpGateway.port}"
+
+    MetricCard {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("HTTP Gateway", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    "Lets your phone relay state reads and control commands over simple HTTP for curl, dashboards, or local automation.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Checkbox(
+                checked = preferences.httpGateway.enabled,
+                onCheckedChange = onSetHttpGatewayEnabled,
+            )
+        }
+        Text(
+            statusText,
+            style = MaterialTheme.typography.bodyMedium,
+            color = statusColor,
+        )
+        if (preferences.httpGateway.enabled) {
+            gatewayState.urls.firstOrNull()?.let {
+                Text(
+                    "Primary URL: $it",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (gatewayState.urls.size > 1) {
+                Text(
+                    gatewayState.urls.drop(1).joinToString(separator = "\n"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            OutlinedTextField(
+                value = portText,
+                onValueChange = { portText = it.filter(Char::isDigit).take(5) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Port") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            )
+            OutlinedTextField(
+                value = preferences.httpGateway.accessKey.ifBlank { "Saved automatically when enabled" },
+                onValueChange = {},
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Access Key") },
+                readOnly = true,
+                singleLine = true,
+            )
+            if (parsedPort == null && portText.isNotBlank()) {
+                Text(
+                    "Port must be a number between 1 and 65535.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = {
+                        onSaveHttpGatewaySettings(
+                            HttpGatewayPreferences(
+                                enabled = preferences.httpGateway.enabled,
+                                port = parsedPort ?: preferences.httpGateway.port,
+                                accessKey = preferences.httpGateway.accessKey,
+                            ),
+                        )
+                    },
+                    enabled = canSave,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Save Gateway")
+                }
+                OutlinedButton(
+                    onClick = onRotateHttpGatewayAccessKey,
+                    enabled = preferences.httpGateway.enabled,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Rotate Key")
+                }
+            }
+            Text(
+                "Example:\ncurl -H \"X-Voltra-Key: ${preferences.httpGateway.accessKey}\" $curlExampleUrl/v1/state",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                "Enable HTTP Gateway to expose local state and command endpoints on your own network.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

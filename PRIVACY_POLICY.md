@@ -43,6 +43,7 @@ Depending on the features you use, Voltra Controller may handle the following ca
 - last connected device information
 - local control and safety-related preferences
 - optional MQTT broker settings if you enable MQTT Sensor
+- optional HTTP gateway settings if you enable the HTTP Gateway
 
 ### 4. Diagnostics And Logs
 
@@ -62,6 +63,7 @@ Voltra Controller uses this information to:
 - remember local app settings
 - help troubleshoot connection and protocol issues
 - optionally publish selected state data to an MQTT broker that you configure
+- optionally expose selected state data and control endpoints through the local HTTP Gateway you configure
 
 ## What Voltra Controller Does Not Do
 
@@ -90,7 +92,13 @@ That data is sent only to the broker address, port, and topic structure that you
 
 If you export or share logs or diagnostics, the exported file and its contents will leave the app and may be sent to another app, device, or person based on the share action you choose.
 
-### 3. Android System Backup
+### 3. HTTP Gateway
+
+If you enable the HTTP Gateway, the app can expose selected Voltra state data and accept control requests over your local network.
+
+That gateway is intended for your own local-network tools and devices.
+
+### 4. Android System Backup
 
 Depending on your Android device settings, app data stored locally may be included in system-level device backups handled by Android or your device vendor.
 
@@ -113,7 +121,7 @@ Used for the foreground service notification while the app maintains an active c
 
 ### Internet
 
-Used for optional MQTT Sensor functionality when you enable it.
+Used for optional MQTT Sensor functionality and local HTTP Gateway access when you enable those features.
 Core Voltra control does not require internet access.
 
 ## Data Storage And Retention
@@ -125,6 +133,7 @@ This may include:
 - preferences
 - recent device information
 - MQTT settings
+- HTTP gateway settings
 - connection logs
 - diagnostics captures
 
@@ -139,7 +148,7 @@ Data is generally kept until:
 Voltra Controller is designed to minimize unnecessary data transfer by keeping core control and preferences local.
 
 However, no software or storage system can guarantee absolute security.
-If you enable MQTT or export logs, you are responsible for the security of your broker, network, storage destination, and sharing choices.
+If you enable MQTT, the HTTP Gateway, or log exports, you are responsible for the security of your broker, local network, storage destination, and sharing choices.
 
 ## Children's Privacy
 

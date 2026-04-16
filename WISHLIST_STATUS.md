@@ -15,7 +15,6 @@ Status key:
 | Feature | State | What is needed from you |
 | --- | --- | --- |
 | App name: Voltra Controller | Done | Install the next debug APK and confirm launcher/name look right. |
-| Dark Ravens purple accent | Done | Try the default theme on the phone/tablet and tell me if it should be darker or brighter. |
 | Accent color picker | Done | Pick through the More or Home theme row and report any ugly combinations. |
 | Top-right Weight Off toggle | Done | Test connected to the VOLTRA: unloaded should show Load, loaded should show Weight Off. Export diagnostics if the label disagrees with the device. |
 | Weight Training button exits workout/goes home | In progress | Test whether it returns the VOLTRA to its main mode screen. Export diagnostics if it does not. |

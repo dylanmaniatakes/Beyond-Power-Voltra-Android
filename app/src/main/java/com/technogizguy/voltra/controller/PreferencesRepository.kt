@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.technogizguy.voltra.controller.model.WeightUnit
+import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -33,6 +34,7 @@ data class LocalPreferences(
     val instantWeightApplyDefault: Boolean = false,
     val developerModeEnabled: Boolean = false,
     val mqtt: MqttPreferences = MqttPreferences(),
+    val httpGateway: HttpGatewayPreferences = HttpGatewayPreferences(),
 )
 
 data class MqttPreferences(
@@ -44,6 +46,12 @@ data class MqttPreferences(
     val topicPrefix: String = DEFAULT_MQTT_TOPIC_PREFIX,
     val discoveryEnabled: Boolean = true,
     val discoveryPrefix: String = DEFAULT_HOME_ASSISTANT_DISCOVERY_PREFIX,
+)
+
+data class HttpGatewayPreferences(
+    val enabled: Boolean = false,
+    val port: Int = DEFAULT_HTTP_GATEWAY_PORT,
+    val accessKey: String = "",
 )
 
 class PreferencesRepository(
@@ -67,6 +75,11 @@ class PreferencesRepository(
                 topicPrefix = prefs[MQTT_TOPIC_PREFIX]?.takeIf { it.isNotBlank() } ?: DEFAULT_MQTT_TOPIC_PREFIX,
                 discoveryEnabled = prefs[MQTT_DISCOVERY_ENABLED] ?: true,
                 discoveryPrefix = prefs[MQTT_DISCOVERY_PREFIX]?.takeIf { it.isNotBlank() } ?: DEFAULT_HOME_ASSISTANT_DISCOVERY_PREFIX,
+            ),
+            httpGateway = HttpGatewayPreferences(
+                enabled = prefs[HTTP_GATEWAY_ENABLED] ?: false,
+                port = prefs[HTTP_GATEWAY_PORT]?.takeIf { it in 1..65535 } ?: DEFAULT_HTTP_GATEWAY_PORT,
+                accessKey = prefs[HTTP_GATEWAY_ACCESS_KEY].orEmpty(),
             ),
         )
     }
@@ -130,6 +143,28 @@ class PreferencesRepository(
         }
     }
 
+    suspend fun setHttpGatewayEnabled(enabled: Boolean) {
+        context.voltraDataStore.edit { prefs ->
+            prefs[HTTP_GATEWAY_ENABLED] = enabled
+            if (enabled && prefs[HTTP_GATEWAY_ACCESS_KEY].isNullOrBlank()) {
+                prefs[HTTP_GATEWAY_ACCESS_KEY] = generateGatewayAccessKey()
+            }
+        }
+    }
+
+    suspend fun setHttpGatewaySettings(settings: HttpGatewayPreferences) {
+        context.voltraDataStore.edit { prefs ->
+            prefs[HTTP_GATEWAY_PORT] = settings.port.coerceIn(1, 65535)
+            prefs[HTTP_GATEWAY_ACCESS_KEY] = settings.accessKey.ifBlank { generateGatewayAccessKey() }
+        }
+    }
+
+    suspend fun rotateHttpGatewayAccessKey() {
+        context.voltraDataStore.edit { prefs ->
+            prefs[HTTP_GATEWAY_ACCESS_KEY] = generateGatewayAccessKey()
+        }
+    }
+
     private companion object {
         val LAST_DEVICE_ID = stringPreferencesKey("last_device_id")
         val LAST_DEVICE_NAME = stringPreferencesKey("last_device_name")
@@ -146,6 +181,9 @@ class PreferencesRepository(
         val MQTT_TOPIC_PREFIX = stringPreferencesKey("mqtt_topic_prefix")
         val MQTT_DISCOVERY_ENABLED = booleanPreferencesKey("mqtt_discovery_enabled")
         val MQTT_DISCOVERY_PREFIX = stringPreferencesKey("mqtt_discovery_prefix")
+        val HTTP_GATEWAY_ENABLED = booleanPreferencesKey("http_gateway_enabled")
+        val HTTP_GATEWAY_PORT = intPreferencesKey("http_gateway_port")
+        val HTTP_GATEWAY_ACCESS_KEY = stringPreferencesKey("http_gateway_access_key")
     }
 }
 
@@ -154,3 +192,6 @@ const val DEFAULT_WEIGHT_INCREMENT = 5
 const val DEFAULT_MQTT_PORT = 1883
 const val DEFAULT_MQTT_TOPIC_PREFIX = "voltra_control"
 const val DEFAULT_HOME_ASSISTANT_DISCOVERY_PREFIX = "homeassistant"
+const val DEFAULT_HTTP_GATEWAY_PORT = 8788
+
+private fun generateGatewayAccessKey(): String = UUID.randomUUID().toString().replace("-", "")

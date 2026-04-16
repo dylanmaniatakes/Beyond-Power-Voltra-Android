@@ -77,7 +77,13 @@ fun valueTypeName(raw: String): String = when (raw.lowercase(Locale.US)) {
 }
 
 val generateVoltraParamRegistry by tasks.registering {
-    val csvFile = rootProject.layout.projectDirectory.file("../ios/BPBLECommunicator_BPBLECommunicator.bundle/paramInfo.csv")
+    val csvCandidates = listOf(
+        rootProject.layout.projectDirectory.file("app/src/main/assets/voltra/paramInfo.csv"),
+        rootProject.layout.projectDirectory.file("../BeyondPower-Port/ios/BPBLECommunicator_BPBLECommunicator.bundle/paramInfo.csv"),
+        rootProject.layout.projectDirectory.file("../ios/BPBLECommunicator_BPBLECommunicator.bundle/paramInfo.csv"),
+    )
+    val csvFile = csvCandidates.firstOrNull { it.asFile.exists() }
+        ?: rootProject.layout.projectDirectory.file("app/src/main/assets/voltra/paramInfo.csv")
     val outputFile = layout.buildDirectory.file(
         "generated/source/voltraParams/main/com/technogizguy/voltra/controller/protocol/VoltraParamRegistry.kt",
     )
@@ -99,7 +105,7 @@ val generateVoltraParamRegistry by tasks.registering {
             appendLine("import com.technogizguy.voltra.controller.model.VoltraParamDefinition")
             appendLine("import com.technogizguy.voltra.controller.model.VoltraParamValueType")
             appendLine()
-            appendLine("/** Generated from ios/BPBLECommunicator_BPBLECommunicator.bundle/paramInfo.csv. */")
+            appendLine("/** Generated from paramInfo.csv. */")
             appendLine("public object VoltraParamRegistry {")
             appendLine("    public val all: List<VoltraParamDefinition> = buildList {")
             rows.chunked(100).indices.forEach { chunkIndex ->
