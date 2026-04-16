@@ -1,0 +1,277 @@
+# VOLTRA Protocol Notes
+
+## Source Artifacts
+
+- `../ANDROID_PORT_ANALYSIS.md`
+- `../ios/BPBLECommunicator_BPBLECommunicator.bundle/paramInfo.csv`
+- `../ios/EPRefactor` Swift metadata strings
+- `/Users/ticnitsi/Downloads/Payload/EPRefactor.app/EPRefactor` Swift metadata strings from the decrypted IPA
+- Vendor behavior docs for mode semantics only, not BLE command inference. URLs intentionally omitted here to keep the app documentation vendor-name neutral.
+
+## Confirmed So Far
+
+- `paramInfo.csv` contains 2,210 parameter definitions after the header.
+- The iOS binary names VOLTRA characteristics as:
+  - `voltraCommandCharacteristic`
+  - `voltraNotifyCharacteristic`
+  - `voltraTransportCharacteristic`
+  - `voltraJustWriteCharacteristic`
+- The VOLTRA GATT service UUID is `E4DADA34-0867-8783-9F70-2CA29216C7E4`.
+- Static strings plus Android GATT properties indicate this role mapping:
+  - command: `55CA1E52-7354-25DE-6AFC-B7DF1E8816AC` (`READ`, `WRITE`, `NOTIFY`, `INDICATE` on the test device)
+  - notify/response: `CA94658C-0525-5046-E78B-5391B65F47AD` (`NOTIFY`, `INDICATE` on the test device)
+  - transport: `A010891D-F50F-44F0-901F-9A2421A9E050` (`READ`, `WRITE`, `NOTIFY`, `INDICATE` on the test device)
+  - just-write: `19DE84ED-0A69-482C-A8A6-C75CB5BB4389` (`WRITE_NO_RESPONSE` on the test device)
+- Earlier Android diagnostics subscribed to every notify-capable VOLTRA candidate and the VOLTRA disconnected with GATT status 19. Later tests subscribed only to the confirmed notify/response characteristic with CCCD notification or indication values and the VOLTRA still disconnected with status 19. The sysdiagnose capture below shows those disconnects were likely caused by missing app-level bootstrap writes rather than by CCCD subscription alone.
+- The CCCD indication value on the confirmed notify/response characteristic also disconnected with status 19. The next diagnostic app build adds a safe read probe for the VOLTRA command and transport characteristics, with no notification subscription and no command writes.
+- Safe reads succeeded before any subscription/write:
+  - `55CA1E52-7354-25DE-6AFC-B7DF1E8816AC` returned ASCII `CmdTxRx`.
+  - `A010891D-F50F-44F0-901F-9A2421A9E050` returned ASCII `CmdTxRx2`.
+- Two follow-up captures point to a fixed handshake/connect-request timeout rather than a read-triggered disconnect:
+  - Idle connect with no diagnostic action disconnected with VOLTRA-initiated GATT status 19 after 5115 ms.
+  - Read-only connect disconnected with VOLTRA-initiated GATT status 19 after 5033 ms, after the two safe read labels above were captured.
+- Three later exports repeated the same pattern: sessions ended after 5079 ms, 5110 ms, and 5036 ms with status 19. Those exports also showed earlier `CmdTxRx` read frames under newer session headers, so diagnostics now split latest-session frames/commands from earlier captures.
+- The working hypothesis is that the official app sends `commonHandshake` and/or `commonConnectRequest` within roughly five seconds. Until that frame envelope is recovered from the real Mach-O, Android should treat a short-lived GATT connection as unvalidated and keep controls locked.
+- Hopper exports loaded from the `.ipa` ZIP as RAW ARM/v6 are not useful for protocol recovery. The useful target is the Mach-O at `/Users/ticnitsi/Downloads/Payload/EPRefactor.app/EPRefactor`, loaded as Mach-O arm64/AArch64 with Swift metadata.
+- A later Hopper export loaded the `.ipa` ZIP as RAW x86_64 and produced a small BinExport with no `BPBLE`, `BPSDK`, VOLTRA UUID, or handshake strings. That export is also not useful for protocol recovery.
+- `otool -oV` against the real Mach-O confirmed the relevant Swift/ObjC metadata:
+  - `BPBLECommunicator.BPBLEVOLTRAPeripheral` stores `voltraCommandCharacteristic`, `voltraNotifyCharacteristic`, `voltraTransportCharacteristic`, `voltraJustWriteCharacteristic`, `senderID`, `handshakeFinish`, `bleAddrByteCount`, `voltraConnectRequestState`, `waitingForHandShakeNotifyDate`, and `supportNewWriteCharacteristic`.
+  - `BPBLECommunicator.BPSDKCommonBusinessManager` stores handshake sizing/constants: `handshakeBLEAddrLen`, `handshakeAppTypeLen`, `handshakeSenderLen`, `handshakeAppByte`, `handshakeEPByte`, and `deviceCommonStateRawDataCount`.
+  - `BPBLECommunicator.BPSDKCommcManager` stores frame-layout fields: `bpSDKCommonPartLen`, `senderID`, `receiverID`, `mcReceiverID`, `bleID`, `receiverMacAddr`, `reserveBytes`, `frameHeadLen`, `verLenLength`, `crc8Len`, `senderLen`, `receiverLen`, `macAddrLen`, `reserveLen`, `cmdLen`, `retCodLen`, `crc16Len`, `successRetCode`, `handShakeCmd`, `masterByte`, `slaveByte`, `epScreenLen`, CRC tables/initial values, and managers for common/OTA/param/workout/activate/subscription/transport.
+- `BPBLEVOLTRAPeripheral` exposes Objective-C delegate method implementations for:
+  - `peripheral:didDiscoverServices:` at `0x10068a580`
+  - `peripheral:didDiscoverCharacteristicsForService:error:` at `0x10068a5a8`
+  - `peripheral:didWriteValueForCharacteristic:error:` at `0x10068a60c`
+  - `peripheral:didUpdateValueForCharacteristic:error:` at `0x10068a678`
+- A correct Hopper export should start from those method IMPs and the Swift methods that mutate `handshakeFinish` / `voltraConnectRequestState`.
+- `sysdiagnose_2026.04.14_19-47-03-0400_iPhone-OS_iPad_22F76` included `logs/Bluetooth/bluetoothd-hci-latest.pklg`, which Wireshark/tshark can decode as PacketLogger traffic.
+- The official app flow captured in that PacketLogger file:
+  - Exchange MTU: app requested 527 bytes; VOLTRA replied 517 bytes.
+  - Discover VOLTRA service `E4DADA34-0867-8783-9F70-2CA29216C7E4`.
+  - Characteristic value handles on the test device were `0x002a` for `55CA1E52-7354-25DE-6AFC-B7DF1E8816AC`, `0x002e` for `CA94658C-0525-5046-E78B-5391B65F47AD`, `0x0032` for `19DE84ED-0A69-482C-A8A6-C75CB5BB4389`, and `0x0035` for `A010891D-F50F-44F0-901F-9A2421A9E050`.
+  - The app wrote CCCD notification value `0x0001` to `55CA...` descriptor `0x002c`, `CA946...` descriptor `0x0030`, and `A010...` descriptor `0x0037`.
+  - The app then wrote framed packets to `A010...` value handle `0x0035`.
+  - VOLTRA response frames arrived as notifications on `55CA...` value handle `0x002a`.
+- Confirmed `0x55` frame envelope from captured traffic:
+  - byte `0`: magic `0x55`
+  - byte `1`: total frame length in bytes, including magic, length, and CRC bytes
+  - byte `2`: packet type; captured app writes use `0x04` and VOLTRA responses use `0x08`
+  - byte `3`: one-byte header checksum/CRC candidate
+  - bytes `4..5`: sender and receiver ids
+  - byte `6`: sequence/index
+  - byte `7`: channel/reserved candidate
+  - bytes `8..9`: protocol/version field, usually `0x0020`
+  - byte `10`: command id
+  - final two bytes: CRC16 candidate
+- Captured read-only bootstrap writes now used by the Android automatic connect handshake and manual diagnostic probe:
+  - `552904c90110000020004f69506164000000000000000000000000000000000084ab1a5f292001ea4f` (`commonHandshake` app hello, contains ASCII `iPad`)
+  - `550f0801aad200002000ff00aa0419` (`commonConnectRequest` candidate)
+  - `551f044eaa10000020002781105eab9ef41c864ff5877a9c8c1d5f0d603e86` (handshake finish/check candidate)
+  - `550d0433aa10000020007403bc` (common state read candidate)
+  - `550e0466aa100100200077003889`, `550e0466aa10020020007701cc94`, `550e0466aa100300200019002b7e`, `550e0466aa1004002000ab01ad7a` (firmware/serial/activation/security read candidates)
+  - `55130403AA10050020000F02002D4E5D1B8E20` (safe battery state read for `BMS_RSOC` params `0x4E2D` and `0x1B5D`; generated locally from the recovered frame builder)
+- Captured responses include:
+  - `cmd=0x4F` response with ASCII device name `Dylan Voltra 1`.
+  - `cmd=0x77` responses containing strings such as `EP1.0`, `MainControlv1.6`, `MotorControl1.6`, `BMS1.5`, `ESP32-C3MINI-1`, and `PMU1.0`.
+  - `cmd=0x19` response containing serial-like ASCII `B10267A2509130256`.
+- Android hardware test `text-0 14.txt` confirmed the read-only handshake probe works on the phone:
+  - Connection remained `CONNECTED`; the old roughly 5-second status-19 disconnect did not occur.
+  - The app subscribed to three VOLTRA notification channels.
+  - `A010...` writes produced `55CA...` notifications for `cmd=0x4F`, `cmd=0x27`, `cmd=0x74`, `cmd=0x77`, `cmd=0x19`, and `cmd=0xAB`.
+  - Android received many notifications as 20-byte fragments before MTU/frame reassembly was added, so parser output showed length mismatches even though the payloads were correct.
+- The Android BLE layer now requests MTU `517` after connect and reassembles fragmented `0x55` frames by their length byte before parsing or updating readings.
+- Android hardware test `text-0 15.txt` confirmed reassembly works for normal frames and exposed the long-response rule:
+  - Most notifications now arrive as full parsed frames, including full device name and serial responses.
+  - `cmd=0x77` page 2 starts with packet type `0x09`; its total frame length is `0x100 + lengthByte` (`0x177` / 375 bytes in the captured firmware response).
+  - Protocol reassembly now waits for the full extended type-`0x09` tail before emitting the frame.
+- The Android app still keeps load/unload/force-changing controls locked. The new read-only handshake probe sends only captured official bootstrap/read requests so the phone can validate the connection path and notification parsing on real hardware.
+- Android hardware test `text-0 16.txt` confirmed full handshake probe on device `Dylan Voltra 1` (10:20:BA:97:05:DA). New findings:
+  - Serial number in `cmd=0x19` response contains an `M` prefix: `MB10267A2509130256`. `SERIAL_REGEX` updated to `M?B[0-9A-Z]{10,}`.
+  - `cmd=0x77` page 0 response contains `EP1.0` plus BP module markers. `FIRMWARE_REGEX` supports BP-prefixed version strings for later captures.
+  - After the `cmd=0x27` handshake-finish ACK, the device pushes an unsolicited `cmd=0x10` notification (seq=41): `03 00 0A 52 00 00 0B 52 00 00 0C 52 1E 00` (14 bytes). Payload appears to be 3 parameter entries; meaning of param IDs 0x0A/0x0B/0x0C in this context is unknown.
+  - `cmd=0x74` response has a 28-byte payload beginning `00 00 00 06` followed by six 3-byte entries with IDs `0x10`–`0x15` and a zero footer. Earlier notes incorrectly treated the following `0x32` byte as 50% battery; it is actually the first trailing CRC byte, so Android no longer extracts battery from this frame.
+  - `cmd=0xA7` notification (22-byte payload) arrives between the `cmd=0x74` write and its response: bytes 3–8 contain the device MAC (`10 20 BA 97 05 DA`). Byte 15 = `0x01` may be a connection-slot or activation flag.
+  - `cmd=0xAB` response (23-byte payload): byte 0 = return code `0x00` (success), byte 1 = activation flag `0x01` (activated). Bytes 3–22 contain a 20-byte device key that partially overlaps the payload sent in the `cmd=0x27` handshake-finish write (`5E AB 9E F4 1C 86 4F F5 87 7A 9C 8C 1D 5F 0D 60`). Android now extracts activation state from this response.
+  - `cmd=0x27` data response (3-byte payload `82 01 00`) meaning is still unknown; may encode protocol version or device capabilities.
+  - Handshake sequence timing: device sends `cmd=0x4F` name response ~89 ms after app hello write, then sends an unprompted broadcast-style frame (sender=0xD2, receiver=0xFF, cmd=0xFF) ~24 ms later. The `commonConnectRequest` write to 0xD2 must follow within the 5-second device timeout.
+- Android hardware test `text-0 17.txt` confirms the Android app is no longer "fake connected":
+  - The diagnostic export remained `CONNECTED` with three VOLTRA subscriptions and a full GATT snapshot for `55CA`, `CA946`, `19DE`, and `A010`.
+  - The long stream after the read-only handshake is dominated by `cmd=0xAA` notifications from `55CA`, with payload sizes 39, 45, 61, 66, 97, and 127 bytes. These appear to be telemetry/state or log samples, but no force/weight UI mapping is considered confirmed yet.
+  - The frame parser now displays the two sequence bytes as a 16-bit value when the high byte is non-zero. Example: bytes `08 02` are shown as sequence `520`, not just `8`.
+  - The diagnostic export now includes parsed readings and safety-gate state before the raw frame dump so future captures show whether serial, firmware, battery, and activation are actually being merged.
+  - User attempts to set target load, unload, and set strength mode were correctly logged as blocked; no unguarded force-changing write was sent by Android in this capture.
+- Android hardware test `text-0 18.txt` confirmed the improved diagnostics and exposed one passive battery mapping:
+  - Parsed readings show serial `MB10267A2509130256` and activation `Activated`.
+  - Firmware strings were being over-matched from diagnostic ASCII previews where null bytes are rendered as dots. Android now extracts serial/firmware from real printable payload segments instead of the preview string, so future exports should show clean firmware parts such as `EP1.0 / MainControlv1.6 / MotorControl1.6 / BMS1.5 / PMU1.0`.
+  - `cmd=0x10` async state payload `01 00 2D 4E 28` is a one-entry parameter update: parameter `0x4E2D` / decimal `20013` is `BMS_RSOC` in `paramInfo.csv`, value `0x28` is 40%. Android now extracts battery percent from this passive async update.
+  - Android now also requests `BMS_RSOC` once during automatic connect bootstrap so the Home battery gauge does not depend on a spontaneous async update. It accepts the confirmed `0x4E2D` id and the older `0x1B5D` `BMS_RSOC` id when either decodes to 0-100%.
+  - The read-only handshake probe was run twice in the same connected session; both runs produced the expected read responses, and control writes remained locked.
+- Android hardware test `text-0 21.txt` confirmed the corrected strength controls:
+  - After connect, the VOLTRA reached `COMMAND_PROTOCOL_VALIDATED` with three notification subscriptions and parsed firmware/serial/activation state.
+  - Target writes to `BP_BASE_WEIGHT` worked across the confirmed 5-200 lb range.
+  - Load uses `BP_SET_FITNESS_MODE=5`; unload/weight-off uses `BP_SET_FITNESS_MODE=4`.
+  - The final device state after unload was `Strength ready, session active`, with `Can load: true`.
+  - Android now starts the official read-only bootstrap automatically after a confirmed VOLTRA GATT discovery instead of requiring the diagnostics button.
+- Android hardware test `text-0 22.txt` exposed the first weight-training telemetry mapping:
+  - `cmd=0xAA` payloads beginning `81 2B` appear to be big-endian live rep samples.
+  - Payload byte `2` maps like a motion phase: `0=Idle`, `1=Pull`, `3=Return`.
+  - Payload bytes `4..5` incremented as a device rep counter during movement (`2 -> 3 -> 4` in the captured set).
+  - User testing on 2026-04-15 confirmed Android's rep count and phase display mirror the VOLTRA device display.
+- `ble_report.md` and `ble_commands.csv` from the `2026.04.14_20-44-34` sysdiagnose confirm the high-confidence transport path:
+  - Official app writes use ATT handle `0x0035` / `A010891D-F50F-44F0-901F-9A2421A9E050`.
+  - VOLTRA responses and async updates arrive on ATT handle `0x002A` / `55CA1E52-7354-25DE-6AFC-B7DF1E8816AC`.
+  - `19DE...` write-without-response exists but was not used in the captured official traffic.
+  - The separate `BLE_Traffic_Analysis.md` report is useful for raw packet pointers, but its "electric bike/scooter" interpretation and L2CAP-prefixed header breakdown are not treated as protocol truth for this fitness machine.
+- `sysdiagnose_2026.04.14_23-23-25-0400_iPhone-OS_iPad_22F76` captured a targeted official-app session: connect, open weight training, set 5 lb, load/unload, set 10 lb, load/unload.
+  - The target load write is now confirmed: `cmd=0x11`, parameter `0x3E86` / decimal `16006` / `BP_BASE_WEIGHT`, uint16 little-endian pounds. Official frames include `...110100863E0500...` for 5 lb and `...110100863E0A00...` for 10 lb.
+  - The strength/weight-training mode write is now confirmed: `cmd=0x11`, parameter `0x3E89` / decimal `16009` / `BP_SET_FITNESS_MODE`, uint16 little-endian. Value `0x0004` is strength-ready/unloaded; value `0x0005` is loaded.
+  - Correction from hardware test `text-0 20.txt`: `0x4FB0` / decimal `20400` / `FITNESS_WORKOUT_STATE` is not the physical load/unload command. It behaves like weight-training session active/inactive. Value `1` keeps the weight-training session active; value `0` can take the device out of that session.
+  - The physical load/unload transition is `cmd=0x11`, parameter `0x3E89` / `BP_SET_FITNESS_MODE`: value `5` loads, value `4` unloads/returns to strength-ready mode.
+  - VOLTRA pushes matching `cmd=0x10` parameter updates after the writes. Examples:
+    - `BP_BASE_WEIGHT=5`: `5513040310AA79022000100100863E05003FA2`
+    - `BP_BASE_WEIGHT=10`: `5513040310AA8B022000100100863E0A000446`
+    - `BP_SET_FITNESS_MODE=4`: `5513040310AA96022000100100893E0400C6A8`
+    - `FITNESS_WORKOUT_STATE=0`: `551904E410AA9B022000100300B04F0011500067540000241B`
+  - Bulk state responses (`cmd=0x0F`) and async state updates (`cmd=0x10`) both use the same parameter-list layout: uint16 entry count, then repeated uint16 little-endian param id followed by the value length from `paramInfo.csv`.
+  - Android now decodes `BP_RUNTIME_POSITION_CM` (`0x3E82`), `BP_RUNTIME_WIRE_WEIGHT_LBS` (`0x3E83`), `BP_BASE_WEIGHT` (`0x3E86`), `BP_CHAINS_WEIGHT` (`0x3E87`), `BP_ECCENTRIC_WEIGHT` (`0x3E88`), `BP_SET_FITNESS_MODE` (`0x3E89`), `BMS_RSOC` (`0x4E2D`), `FITNESS_WORKOUT_STATE` (`0x4FB0`), Resistance Band force/length flags, and cable offset/quick-adjust params from passive state frames.
+- `sysdiagnose_2026.04.15_09-15-04-0400_iPhone-OS_iPad_22F76` captured weight-training feature actions: Chains on with several values ending at 30 lb, Eccentric set to -20 lb, menus/features opened, and Resistance Band loaded once.
+  - Chains weight is now confirmed as a direct `cmd=0x11` write to `0x3E87` / `BP_CHAINS_WEIGHT`, uint16 little-endian pounds. Official writes included `0`, `24`, `29`, and `30` lb. The 30 lb frame was `55130403AA1020002000110100873E1E0042CA`, followed by a matching `cmd=0x10` async update.
+  - Eccentric weight is now confirmed as a direct `cmd=0x11` write to `0x3E88` / `BP_ECCENTRIC_WEIGHT`, but the value semantics are signed int16 pounds even though `paramInfo.csv` labels the field `uint16`. Official writes included raw `F1 FF` for -15 lb and `EC FF` for -20 lb. The -20 lb frame was `55130403AA1023002000110100883EECFFC8C6`.
+  - Android now decodes `BP_ECCENTRIC_WEIGHT` with signed int16 semantics.
+  - `0x53B0` / `FITNESS_INVERSE_CHAIN` was observed only as value `0`; inverse-on remains unconfirmed.
+  - In this feature flow, the official app wrote `BP_SET_FITNESS_MODE=1` before the device reported loaded state `5`, and wrote `BP_SET_FITNESS_MODE=0` before the device reported ready state `4`. Android keeps the previously hardware-tested `5`/`4` strength load/unload writes until a clean capture proves whether the `1`/`0` form is a general shortcut or a mode-dependent command.
+  - Resistance Band clues: `FITNESS_WORKOUT_STATE=2` appears to enter Resistance Band mode, a `cmd=0x0F` read probes `MC_DEFAULT_OFFLEN_CM` (`0x506A`) and `BP_RUNTIME_POSITION_CM` (`0x3E82`), and `BP_SET_FITNESS_MODE=1` appears to load/start the current mode. Later captures replaced this with confirmed `BP_SET_FITNESS_MODE=5` load/start.
+  - Curated capture notes are in `captures/2026-04-15-weight-chains-eccentric-resistance-band.md`.
+- Android diagnostic `text-0 23.txt` confirmed the strength-feature range should be dynamic, not fixed to the first captured values:
+  - At base weight `172 lb`, the device reported `BP_CHAINS_WEIGHT=28 lb`, matching the documented/observed 200 lb total ceiling (`172 + 28 = 200`).
+  - Inverse Chains is exposed as a guarded toggle using `0x53B0` and the confirmed off frame `551204C7AA1027002000110100B05300ED37`; inverse-on remains an inferred `1` value until a clean iPad capture confirms it.
+  - Curated Android diagnostic notes are in `captures/2026-04-15-android-dynamic-chains-eccentric.md`.
+- Android diagnostics `text-0 24.txt` and `text-0 25.txt` refined the strength-feature limits:
+  - Chains is capped to the smaller of the current base weight and remaining headroom to 200 lb. Example: at `45 lb`, attempted Chains values above `45 lb` were acknowledged but echoed back as `45 lb`.
+  - Earlier Android builds displayed Eccentric as a positive-only reduction, but user testing showed the device UI has no negative slider direction and accepts signed load around zero. Android now exposes `-baseWeightLb..+baseWeightLb` so positive eccentric overload can be tested directly.
+  - Android now exposes Chains, Inverse Chains, and Eccentric as separate controls. Chains and Eccentric have explicit Off buttons; Inverse Chains is kept independent and only writes `FITNESS_INVERSE_CHAIN` until a clean capture reveals its separate amount parameter.
+- Android diagnostic `text-0 26.txt` captured a user-confirmed workout where the Voltra showed 3 sets of 4 reps at 5 lb:
+  - `cmd=0xAA` payloads beginning `81 2B` continue to map byte 2 as phase and bytes 4..5 as big-endian rep count.
+  - Payload byte 3 stayed at `0x03` while the visible set counter was 3, so Android now parses byte 3 as the device-backed set count.
+- Android diagnostics `text-0 28.txt` and `text-0 29.txt` refined strength-feature controls:
+  - `BP_CHAINS_WEIGHT` writes continued to echo through `cmd=0x10` state frames and are used for Chains on/off status.
+  - `FITNESS_INVERSE_CHAIN` writes to `0x53B0` ACKed, but did not appear in the state stream or produce an obvious device effect in user testing. Android now queues a read-back of `0x53B0` after strength-feature writes to catch the status if the device returns it via `cmd=0x0F`.
+  - Strength-feature writes are no longer blocked while `BP_SET_FITNESS_MODE=5` loaded, matching the device UI behavior.
+- Android diagnostic `text-0 31.txt` clarified the UI model:
+  - Inverse Chains should not be treated as a type selector for the regular Chains amount. Android now keeps the two controls independent; the Inverse Chains amount editor is capture-blocked rather than writing `BP_CHAINS_WEIGHT`.
+  - The latest Android-side log confirms `FITNESS_INVERSE_CHAIN` can be read back through the queued `cmd=0x0F` status read when it is included in the parameter list.
+- Android diagnostic `text-0 30.txt` captured passive Resistance Band navigation from the device screen:
+  - `FITNESS_WORKOUT_STATE=2` maps to Resistance Band mode. Android now labels that state passively.
+- `sysdiagnose_2026.04.15_15-35-05-0400_iPhone-OS_iPad_22F76` captured a focused official-app Resistance Band run: enter Resistance Band, set force near 50 lb, load, change target again, adjust cable length via trigger, and exit.
+  - Enter Resistance Band is confirmed as `cmd=0x11`, parameter `0x4FB0 FITNESS_WORKOUT_STATE`, value `2`: `551204C7AA1013002000110100B04F02B5E6`.
+  - Android `text-0 34.txt` confirms the device clamps Resistance Band minimum force to `15 lb`; earlier Android `10 lb` writes did not stick.
+  - Resistance Band max force is confirmed as `0x5362` / decimal `21346` / `RESISTANCE_BAND_MAX_FORCE`, uint16 little-endian pounds. Captured writes included `51`, `50`, and a later `100`; the later `100` conflicts with the user-described 70 lb action, so Android exposes this as a testing control with clear diagnostic labeling.
+  - Resistance Band load/start used the already-confirmed loaded value `BP_SET_FITNESS_MODE=5`: `55130403AA1019002000110100893E0500CD6F`, followed by a matching device echo.
+  - Cable trigger adjustment is confirmed to update `BP_RUNTIME_POSITION_CM` (`0x3E82`) while moving and then `MC_DEFAULT_OFFLEN_CM` (`0x506A`) when saved. The official entry write is `EP_SCR_SWITCH=00 10 00 01`, and the official close/return write later in the same flow is `EP_SCR_SWITCH=00 00 00 02`. Android now decodes both runtime cable length and saved cable offset, and the user-facing control stays trigger-only instead of pretending to set a direct numeric length.
+  - Curated capture notes are in `captures/2026-04-15-resistance-band-50-70-cable-trigger.md`.
+- `sysdiagnose_2026.04.15_16-56-30-0400_iPhone-OS_iPad_22F76` and `sysdiagnose_2026.04.15_17-01-46-0400_iPhone-OS_iPad_22F76` are the first non-strength mode probes beyond Resistance Band:
+  - User correction: the second archive should be treated as Isokinetic, not Isometric.
+  - Damper is now partially confirmed from the PacketLogger stream: entering Damper writes `0x4FB0 FITNESS_WORKOUT_STATE = 4`, and the level control writes `0x5103 FITNESS_DAMPER_RATIO_IDX` with one-byte index values (`0`, `5`, `9` observed). Once in Damper, the official app still uses `BP_SET_FITNESS_MODE=5` for load and `BP_SET_FITNESS_MODE=4` for ready/unload without re-entering Weight Training.
+  - The same captures still include a lot of bootstrap traffic and general state reads, but two focused follow-up captures promoted more of the menu surface.
+  - `text-0 37.txt` and the later iPad captures confirm the passive Isokinetic signature as `FITNESS_WORKOUT_STATE=7` with `fitnessMode=260` (`0x0104`) when ready.
+  - `sysdiagnose_2026.04.15_18-24-50-0400_iPhone-OS_iPad_22F76` confirms official-app Isokinetic writes:
+    - enter Isokinetic: `0x4FB0 FITNESS_WORKOUT_STATE = 7`
+    - `0x5410 ISOKINETIC_ECC_MODE`: `0 = Isokinetic`, `1 = Constant Resistance`
+    - `0x5411 ISOKINETIC_ECC_SPEED_LIMIT`: eccentric-settings speed limit, with `0 = Auto`, `1000 = 1.0 m/s`, `2000 = 2.0 m/s`
+    - `0x5412 ISOKINETIC_ECC_CONST_WEIGHT`: observed `5` and `100` lb
+    - `0x5413 ISOKINETIC_ECC_OVERLOAD_WEIGHT`: observed `5`, `145`, and `200` lb
+  - `sysdiagnose_2026.04.15_19-25-55-0400_iPhone-OS_iPad_22F76` is the first clean main-card Isokinetic speed capture:
+    - official app still enters Isokinetic with `0x4FB0 FITNESS_WORKOUT_STATE = 7`
+    - the main-card speed control writes `0x5350 EP_ISOKINETIC_TARGET_SPEED_MM_S` as a 4-byte little-endian mm/s value
+    - captured values: `1000 = 1.0 m/s` and `500 = 0.5 m/s`
+    - this capture happened without opening the eccentric settings sheet, so `0x5350` should be treated as the primary workout speed target, not the settings-only eccentric limit
+  - `sysdiagnose_2026.04.15_18-15-54-0400_iPhone-OS_iPad_22F76` and hardware validation confirm `0x52CA` as the shared Resistance Experience toggle used from Weight Training mode: `0 = Intense`, `1 = Standard`.
+  - Android now treats Isokinetic main target speed and eccentric settings as separate controls.
+- `sysdiagnose_2026.04.15_20-25-36-0400_iPhone-OS_iPad_22F76` captured Assist toggling inside Weight Training between normal load and unload:
+  - official app writes `0x5106 FITNESS_ASSIST_MODE`
+  - observed writes: `1` to turn Assist on, `0` to turn it off
+  - the follow-up async read-back reports `1` while active, but the idle/off state reads back as `8`, so Android treats only value `1` as On and any other observed value as Off
+  - this is now safe enough for a real Weight Training Assist toggle in Android
+- `sysdiagnose_2026.04.15_20-29-37-0400_iPhone-OS_iPad_22F76` is the first clean Isometric Test capture:
+  - official app enters Isometric Test with `0x4FB0 FITNESS_WORKOUT_STATE = 8`
+  - the page appears passive/read-only from BLE control perspective; no dedicated control writes were observed beyond the mode entry and exit
+  - passive reads include `0x5431 ISOMETRIC_MAX_FORCE = 400 lb` and `0x53D2 ISOMETRIC_MAX_DURATION = 15 s`
+  - `BP_SET_FITNESS_MODE` reports `0x0085` while the Isometric page is open, which looks like a generic test-screen mode rather than a loadable workout-ready state
+- `sysdiagnose_2026.04.15_20-36-03-0400_iPhone-OS_iPad_22F76` and `sysdiagnose_2026.04.15_20-44-11-0400_iPhone-OS_iPad_22F76` are the first focused Custom Curve captures:
+  - the official app traffic is dominated by `cmd=0xAA` vendor messages rather than normal `cmd=0x11` parameter writes
+  - repeated `0xAA 0x13` app writes appear to drive editor/apply steps, while `0xAA 0x80`, `0xAA 0x86`, and `0xAA 0x92` responses carry slot metadata and larger curve payloads
+  - the earlier CSV candidates `0x539C CUSTOM_CURVE_ID`, `0x3E90 APP_STORAGE_SETTINGS_FORCE_CURVE_CHOOSE`, and `0x3E8F FORCE_CURVE_UPDATE` did not show up directly in these captures
+  - Android should keep Custom Curve behind Developer Mode and treat it as notes-only until the `0xAA` message family is mapped safely
+
+## CRC Algorithms (Cracked 2026-04-14)
+
+Cracked against 17 known app-write frames from `sysdiagnose_2026.04.14_20-44-34-0400` `ble_commands.csv`. All 17 frames verify to [OK].
+
+### Header CRC8 (byte 3)
+- **Input**: first 3 bytes of the frame `[0x55, len, type]`
+- **Algorithm**: CRC-8 with poly=0x31, init=0xEE, reflect_in=true, reflect_out=true, xor_out=0x00
+- **Note**: The same as CRC-8/MAXIM but with a non-standard init value (0xEE vs 0x00). The input is ONLY the 3-byte magic/length/type prefix — sender and receiver bytes are NOT covered.
+
+### Trailing CRC16 (last 2 bytes)
+- **Input**: entire frame body excluding the final 2 bytes
+- **Algorithm**: CRC-16 with poly=0x1021, init=0x496C, reflect_in=true, reflect_out=true, xor_out=0x0000
+- **Storage**: little-endian — `[crc_lo, crc_hi]`
+- **Note**: A non-standard CRC-16/KERMIT variant (KERMIT uses init=0x0000). The init value 0x496C is presumably hardcoded in the `BPSDKCommcManager` CRC tables from the iOS binary.
+
+### Control Command Confirmed
+
+- **Set target load**: `cmd=0x11, param_id=0x3E86 BP_BASE_WEIGHT, payload=[01 00 86 3E <uint16 lb>]`
+- **Set Chains extra load**: `cmd=0x11, param_id=0x3E87 BP_CHAINS_WEIGHT, payload=[01 00 87 3E <uint16 lb>]` (Android UI cap: `0..min(baseWeightLb, 200 - baseWeightLb)`)
+- **Set Eccentric extra load**: `cmd=0x11, param_id=0x3E88 BP_ECCENTRIC_WEIGHT, payload=[01 00 88 3E <int16 lb>]` (Android UI writes signed pounds in the range `-baseWeightLb..+baseWeightLb`)
+- **Set Inverse Chains enabled flag**: `cmd=0x11, param_id=0x53B0 FITNESS_INVERSE_CHAIN, payload=[01 00 B0 53 <uint8 enabled>]`; off/`0` is captured, on/`1` is inferred and still needs validation. This is not the inverse amount command.
+- **Enter Resistance Band session**: `cmd=0x11, param_id=0x4FB0 FITNESS_WORKOUT_STATE, payload=[01 00 B0 4F 02]`
+- **Enter Damper session**: `cmd=0x11, param_id=0x4FB0 FITNESS_WORKOUT_STATE, payload=[01 00 B0 4F 04]`
+- **Set Damper level**: `cmd=0x11, param_id=0x5103 FITNESS_DAMPER_RATIO_IDX, payload=[01 00 03 51 <uint8 index>]` (`0`, `5`, and `9` captured)
+- **Set Resistance Band max force**: `cmd=0x11, param_id=0x5362 RESISTANCE_BAND_MAX_FORCE, payload=[01 00 62 53 <uint16 lb>]` (testing UI enabled; confirm 70 lb with a clean capture)
+- **Set Resistance Experience**: `cmd=0x11, param_id=0x52CA, payload=[01 00 CA 52 <uint8 0|1>]` where `0=Intense` and `1=Standard`
+- **Set Assist mode**: `cmd=0x11, param_id=0x5106 FITNESS_ASSIST_MODE, payload=[01 00 06 51 <uint8>]` where `1=On`; the device normalizes the observed idle/off state back to `8` in follow-up reads
+- **Enter Isokinetic session**: `cmd=0x11, param_id=0x4FB0 FITNESS_WORKOUT_STATE, payload=[01 00 B0 4F 07]`
+- **Enter Isometric Test**: `cmd=0x11, param_id=0x4FB0 FITNESS_WORKOUT_STATE, payload=[01 00 B0 4F 08]`
+- **Set Isokinetic main target speed**: `cmd=0x11, param_id=0x5350 EP_ISOKINETIC_TARGET_SPEED_MM_S, payload=[01 00 50 53 <uint32 mm/s>]`
+- **Set Isokinetic submenu**: `cmd=0x11, param_id=0x5410 ISOKINETIC_ECC_MODE, payload=[01 00 10 54 <uint8 0|1>]` where `0=Isokinetic`, `1=Constant Resistance`
+- **Set Isokinetic eccentric speed limit**: `cmd=0x11, param_id=0x5411 ISOKINETIC_ECC_SPEED_LIMIT, payload=[01 00 11 54 <uint16 mm/s>]` where `0=Auto`
+- **Set Isokinetic constant resistance**: `cmd=0x11, param_id=0x5412 ISOKINETIC_ECC_CONST_WEIGHT, payload=[01 00 12 54 <uint16 lb>]`
+- **Set Isokinetic max eccentric load**: `cmd=0x11, param_id=0x5413 ISOKINETIC_ECC_OVERLOAD_WEIGHT, payload=[01 00 13 54 <uint16 lb>]`
+- **Set cable trigger / screen switch**: `cmd=0x11, param_id=0x5165 EP_SCR_SWITCH, payload=[01 00 65 51 00 10 00 01]` opens the device cable-length flow. A later official close/return write uses `[01 00 65 51 00 00 00 02]`.
+- **Observed saved cable offset param**: `cmd=0x11, param_id=0x506A MC_DEFAULT_OFFLEN_CM, payload=[01 00 6A 50 <uint16 cm>]` exists as an experimental diagnostic write only and is not exposed in the current UI.
+- **Read Resistance Band cable state**: `cmd=0x0F` for `0x506A MC_DEFAULT_OFFLEN_CM`, `0x3E82 BP_RUNTIME_POSITION_CM`, `0x53B7 RESISTANCE_BAND_LEN`, `0x53B6 RESISTANCE_BAND_LEN_BY_ROM`, `0x52E3 EP_RESISTANCE_BAND_INVERSE`, and `0x54BC QUICK_CABLE_ADJUSTMENT`
+- **Read mode feature state**: `cmd=0x0F` for `BP_BASE_WEIGHT`, `RESISTANCE_BAND_MAX_FORCE`, Resistance Band length/ROM/inverse flags, `BP_CHAINS_WEIGHT`, `BP_ECCENTRIC_WEIGHT`, `FITNESS_INVERSE_CHAIN`, `WEIGHT_TRAINING_EXTRA_MODE`, `BP_SET_FITNESS_MODE`, `FITNESS_WORKOUT_STATE`, `BP_RUNTIME_POSITION_CM`, `MC_DEFAULT_OFFLEN_CM`, and `QUICK_CABLE_ADJUSTMENT`. Android sends this during connect bootstrap and after experimental mode/feature writes.
+- **Enter weight training session**: `cmd=0x11, param_id=0x4FB0 FITNESS_WORKOUT_STATE, payload=[01 00 B0 4F 01]`
+- **Set strength-ready mode / unload**: `cmd=0x11, param_id=0x3E89 BP_SET_FITNESS_MODE, payload=[01 00 89 3E 04 00]`
+- **Load**: `cmd=0x11, param_id=0x3E89 BP_SET_FITNESS_MODE, payload=[01 00 89 3E 05 00]`
+- **Exit weight training session**: `cmd=0x11, param_id=0x4FB0 FITNESS_WORKOUT_STATE, payload=[01 00 B0 4F 00]` (not used for the normal Android Unload button)
+- Confirmed by the targeted `23-23-25` iPad capture plus the Android `text-0 20.txt` test, where target selection worked but `FITNESS_WORKOUT_STATE=0` behaved like leaving the weight-training session rather than normal unload.
+- `VoltraFrameBuilder` and `VoltraControlFrames` in `core:protocol` generate these frames from scratch with correct CRC8 and CRC16
+- `VoltraFrameBuilderTest` verifies generated control frames byte-for-byte against official iOS writes:
+  - 5 lb target: `55130403AA1014002000110100863E05005A6A`
+  - 10 lb target: `55130403AA1022002000110100863E0A002A8F`
+  - strength-ready/unload: `55130403AA101C002000110100893E0400D17D`
+  - load mode: `55130403AA1024002000110100893E05006C4B`
+  - 30 lb chains: `55130403AA1020002000110100873E1E0042CA`
+  - -20 lb eccentric: `55130403AA1023002000110100883EECFFC8C6`
+  - inverse chains off: `551204C7AA1027002000110100B05300ED37`
+  - enter weight-training session: `551204C7AA1013002000110100B04F012ED4`
+  - exit weight-training session: `551204C7AA1014002000110100B04F005201`
+- Target load, Chains/Eccentric setting, strength mode, load, and unload are now implemented in `AndroidVoltraClient` behind the runtime `controlCommandsEnabled` gate. Android sets that gate only after a connected session receives a valid parsed notification on the confirmed VOLTRA response channel.
+- Strength feature parameter names still visible but not fully mapped:
+  - `0x5189` / `EP_WORKOUT_CHAINS_PCT_X100`
+  - `0x518A` / `EP_WORKOUT_ECCENTRIC_PCT_X100`
+  - `0x53B0` / `FITNESS_INVERSE_CHAIN` (only value 0 captured)
+  - `0x53C6` / `WEIGHT_TRAINING_EXTRA_MODE`
+  - Custom Curve editor/apply traffic appears to live under a separate `cmd=0xAA` message family rather than these simple parameter writes
+
+## Unknown Until Hardware Validation
+
+- Response correlation beyond the simple sender/receiver/sequence/command fields above.
+- Remaining `BP_SET_FITNESS_MODE` values outside confirmed strength-ready `4` and strength-loaded `5`.
+- Whether kg-mode target load writes use pounds internally or require a unit parameter write; Android v1 only sends lb target writes.
+- Lock/child-lock and OTA-active parameter mappings. Android parses battery, activation, target, mode, and workout state, but has not yet mapped every possible safety interlock.
+
+## Safety Policy
+
+Control writes are gated behind `controlCommandsEnabled` in `VoltraSessionState`. The flag resets on every connect/disconnect and becomes true only after an inbound VOLTRA notification validates the confirmed response channel and frame parser for that session. Load is further gated by activation, strength-ready mode, active weight-training session state, and the confirmed 5-200 lb target range. Unload still requires the validated control channel but does not require `canLoad`.
