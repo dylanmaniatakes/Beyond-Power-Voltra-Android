@@ -80,11 +80,11 @@ Recommended flow:
 
 Current package version:
 
-- `versionCode = 104`
-- `versionName = 1.3`
+- `versionCode = 105`
+- `versionName = 1.3.2`
 
 User-facing in-app label:
 
-- `Alpha 1.3`
+- `Alpha 1.3.2`
 
 Increase `versionCode` for every new Play upload.

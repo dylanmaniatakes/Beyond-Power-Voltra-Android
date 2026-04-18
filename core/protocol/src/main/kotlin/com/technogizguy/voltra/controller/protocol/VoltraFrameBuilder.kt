@@ -23,6 +23,7 @@ object VoltraFrameBuilder {
     private const val FRAME_TYPE_APP_WRITE: Int = 0x04
     private const val FIXED_HEADER_BYTES: Int = 11   // magic+len+type+crc8+sender+recv+seq_lo+seq_hi+proto_lo+proto_hi+cmd
     private const val CRC16_BYTES: Int = 2
+    private const val MAX_ENCODED_LENGTH_BYTE: Int = 0xFF
 
     /** Sender ID used by the app in all confirmed write frames. */
     const val APP_SENDER: Int = 0xAA
@@ -52,15 +53,16 @@ object VoltraFrameBuilder {
         receiver: Int = DEVICE_RECEIVER,
         proto: Int = PROTO,
     ): ByteArray {
-        val length = FIXED_HEADER_BYTES + payload.size + CRC16_BYTES
-        require(length <= 0xFF) { "VOLTRA frame payload too large: length=$length > 255" }
+        val totalLength = FIXED_HEADER_BYTES + payload.size + CRC16_BYTES
+        require(totalLength <= 0xFFFF) { "VOLTRA frame payload too large: length=$totalLength > 65535" }
+        val encodedLength = totalLength.coerceAtMost(MAX_ENCODED_LENGTH_BYTE)
 
-        val headerForCrc8 = byteArrayOf(MAGIC, length.toByte(), FRAME_TYPE_APP_WRITE.toByte())
+        val headerForCrc8 = byteArrayOf(MAGIC, encodedLength.toByte(), FRAME_TYPE_APP_WRITE.toByte())
         val crc8Val = crc8(headerForCrc8)
 
-        val body = ByteArray(length - CRC16_BYTES).also { buf ->
+        val body = ByteArray(totalLength - CRC16_BYTES).also { buf ->
             buf[0] = MAGIC
-            buf[1] = length.toByte()
+            buf[1] = encodedLength.toByte()
             buf[2] = FRAME_TYPE_APP_WRITE.toByte()
             buf[3] = crc8Val.toByte()
             buf[4] = sender.toByte()

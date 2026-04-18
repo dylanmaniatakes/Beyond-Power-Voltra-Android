@@ -19,6 +19,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.technogizguy.voltra.controller.model.GattProperty
 import com.technogizguy.voltra.controller.model.RawFrameDirection
@@ -78,6 +79,15 @@ class AndroidVoltraClient(
     private var serviceDiscoveryStarted = false
     private var controlSeq: Int = 0
     private var inFlightWrite: CharacteristicWrite? = null
+    private var isometricVendorRefreshRunnable: Runnable? = null
+    private var pendingIsometricAutoLoad = false
+    private var pendingIsometricAutoLoadRunnable: Runnable? = null
+    private var pendingIsometricAutoLoadAttempts = 0
+    private var pendingIsometricLoadIssued = false
+    private var lastIsometricEnterAtMillis = 0L
+    private var lastIsometricLoadAttemptAtMillis = 0L
+    private var lastIsometricVendorRefreshAtMillis = 0L
+    private var isometricVendorRefreshUntilMillis = 0L
 
     private val mutableState = MutableStateFlow(VoltraSessionState())
     override val state: StateFlow<VoltraSessionState> = mutableState
@@ -219,6 +229,7 @@ class AndroidVoltraClient(
         writeQueue.clear()
         notificationAssemblers.clear()
         serviceDiscoveryStarted = false
+        cancelIsometricVendorRefreshBurst()
         mainHandler.removeCallbacksAndMessages(null)
         runReadOnlyBootstrapAfterSubscribe = false
         val disconnectedAt = System.currentTimeMillis()
@@ -473,14 +484,61 @@ class AndroidVoltraClient(
                 blocked(VoltraControlCommand.ENTER_ISOMETRIC_MODE, "Cannot enter Isometric Test while the VOLTRA is not connected.")
             currentGatt == null ->
                 blocked(VoltraControlCommand.ENTER_ISOMETRIC_MODE, "No active GATT connection.")
-            else -> sendParamWriteCommand(
-                gatt = currentGatt,
-                command = VoltraControlCommand.ENTER_ISOMETRIC_MODE,
-                paramId = VoltraControlFrames.PARAM_FITNESS_WORKOUT_STATE,
-                valueBytes = byteArrayOf(VoltraControlFrames.WORKOUT_STATE_ISOMETRIC.toByte()),
-                label = "enter Isometric Test (FITNESS_WORKOUT_STATE=8)",
-                followUpReadParamIds = MODE_FEATURE_STATUS_PARAMS,
-            )
+            hasPendingCommand(VoltraControlCommand.ENTER_ISOMETRIC_MODE) ->
+                logCommand(
+                    VoltraCommandResult(
+                        command = VoltraControlCommand.ENTER_ISOMETRIC_MODE,
+                        status = VoltraCommandStatus.QUEUED,
+                        message = "Isometric Test entry is already queued.",
+                        timestampMillis = System.currentTimeMillis(),
+                    ),
+                )
+            else -> {
+                cancelIsometricVendorRefreshBurst()
+                stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
+                mutableState.update {
+                    it.copy(
+                        reading = it.reading.clearIsometricTestState().copy(
+                            workoutMode = "Isometric Test, Ready",
+                        ),
+                        safety = it.safety.copy(
+                            canLoad = true,
+                            reasons = listOf("Ready for current mode load."),
+                            parsedDeviceState = true,
+                            workoutState = VoltraControlFrames.WORKOUT_STATE_ISOMETRIC,
+                            fitnessMode = VoltraControlFrames.FITNESS_MODE_STRENGTH_READY,
+                            targetLoadLb = it.safety.targetLoadLb ?: it.reading.weightLb,
+                        ),
+                    )
+                }
+                val result = sendTransportFrames(
+                    gatt = currentGatt,
+                    command = VoltraControlCommand.ENTER_ISOMETRIC_MODE,
+                    frames = buildList {
+                        add(
+                            QueuedFrameSpec(
+                                label = "enter Isometric Test (FITNESS_WORKOUT_STATE=8)",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                                    payload = VoltraControlFrames.enterIsometricPayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                    },
+                    label = "enter Isometric Test (FITNESS_WORKOUT_STATE=8)",
+                )
+                pendingIsometricAutoLoad = true
+                if (result.status != VoltraCommandStatus.BLOCKED && result.status != VoltraCommandStatus.FAILED) {
+                    lastIsometricEnterAtMillis = System.currentTimeMillis()
+                    pendingIsometricLoadIssued = false
+                    schedulePendingIsometricAutoLoad(currentGatt)
+                } else {
+                    pendingIsometricAutoLoad = false
+                    lastIsometricEnterAtMillis = 0L
+                }
+                result
+            }
         }
     }
 
@@ -807,6 +865,124 @@ class AndroidVoltraClient(
         }
     }
 
+    override suspend fun setDeviceName(name: String): VoltraCommandResult {
+        val current = mutableState.value
+        val currentGatt = gatt
+        val trimmed = name.trim()
+        return when {
+            current.connectionState != VoltraConnectionState.CONNECTED ->
+                blocked(VoltraControlCommand.SET_DEVICE_NAME, "Cannot rename the VOLTRA while it is not connected.")
+            currentGatt == null ->
+                blocked(VoltraControlCommand.SET_DEVICE_NAME, "No active GATT connection.")
+            else -> {
+                val frameBytes = VoltraFrameBuilder.build(
+                    cmd = VoltraControlFrames.CMD_SET_DEVICE_NAME,
+                    payload = VoltraControlFrames.setDeviceNamePayload(trimmed),
+                    seq = controlSeq++,
+                )
+                val result = sendCommandFrames(
+                    gatt = currentGatt,
+                    command = VoltraControlCommand.SET_DEVICE_NAME,
+                    frames = listOf(
+                        QueuedFrameSpec(
+                            label = "set device name ($trimmed)",
+                            bytes = frameBytes,
+                        ),
+                    ),
+                    label = "set device name",
+                )
+                if (result.status != VoltraCommandStatus.BLOCKED && result.status != VoltraCommandStatus.FAILED) {
+                    mutableState.update { session ->
+                        session.copy(
+                            currentDevice = session.currentDevice?.copy(name = trimmed),
+                            statusMessage = "Queued device rename to \"$trimmed\".",
+                        )
+                    }
+                }
+                result
+            }
+        }
+    }
+
+    override suspend fun uploadStartupImage(jpegBytes: ByteArray): VoltraCommandResult {
+        val current = mutableState.value
+        val currentGatt = gatt
+        return when {
+            current.connectionState != VoltraConnectionState.CONNECTED ->
+                blocked(VoltraControlCommand.UPLOAD_STARTUP_IMAGE, "Cannot upload a startup image while the VOLTRA is not connected.")
+            currentGatt == null ->
+                blocked(VoltraControlCommand.UPLOAD_STARTUP_IMAGE, "No active GATT connection.")
+            else -> {
+                val chunks = jpegBytes
+                    .asList()
+                    .chunked(VoltraControlFrames.STARTUP_IMAGE_CHUNK_DATA_BYTES)
+                    .map { it.toByteArray() }
+                val queuedFrames = buildList {
+                    add(
+                        QueuedFrameSpec(
+                            label = "startup image header",
+                            bytes = VoltraFrameBuilder.build(
+                                cmd = VoltraControlFrames.CMD_STARTUP_IMAGE,
+                                payload = VoltraControlFrames.startupImageHeaderPayload(
+                                    imageBytes = jpegBytes,
+                                    chunkCount = chunks.size,
+                                ),
+                                seq = controlSeq++,
+                            ),
+                        ),
+                    )
+                    chunks.forEachIndexed { index, chunk ->
+                        add(
+                            QueuedFrameSpec(
+                                label = "startup image chunk ${index + 1}/${chunks.size}",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_STARTUP_IMAGE,
+                                    payload = VoltraControlFrames.startupImageChunkPayload(
+                                        chunkIndex = index + 1,
+                                        chunkBytes = chunk,
+                                    ),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                    }
+                    add(
+                        QueuedFrameSpec(
+                            label = "startup image finalize",
+                            bytes = VoltraFrameBuilder.build(
+                                cmd = VoltraControlFrames.CMD_STARTUP_IMAGE,
+                                payload = VoltraControlFrames.startupImageFinalizePayload(),
+                                seq = controlSeq++,
+                            ),
+                        ),
+                    )
+                    add(
+                        QueuedFrameSpec(
+                            label = "startup image apply",
+                            bytes = VoltraFrameBuilder.build(
+                                cmd = VoltraControlFrames.CMD_STARTUP_IMAGE,
+                                payload = VoltraControlFrames.startupImageApplyPayload(),
+                                seq = controlSeq++,
+                            ),
+                        ),
+                    )
+                }
+                val result = sendTransportFrames(
+                    gatt = currentGatt,
+                    command = VoltraControlCommand.UPLOAD_STARTUP_IMAGE,
+                    frames = queuedFrames,
+                    label = "upload startup image (${jpegBytes.size} bytes, ${chunks.size} chunks)",
+                )
+                if (result.status != VoltraCommandStatus.BLOCKED && result.status != VoltraCommandStatus.FAILED) {
+                    mutableState.update {
+                        it.copy(statusMessage = "Queued startup image upload (${chunks.size} chunks).")
+                    }
+                }
+                result
+            }
+        }
+    }
+
     override suspend fun refreshModeFeatureStatus(): VoltraCommandResult {
         val current = mutableState.value
         val currentGatt = gatt
@@ -852,6 +1028,96 @@ class AndroidVoltraClient(
                 followUpReadParamIds = STRENGTH_FEATURE_STATUS_PARAMS,
             )
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendCommandFrames(
+        gatt: BluetoothGatt,
+        command: VoltraControlCommand,
+        frames: List<QueuedFrameSpec>,
+        label: String,
+    ): VoltraCommandResult {
+        return sendFramesToCharacteristic(
+            gatt = gatt,
+            command = command,
+            frames = frames,
+            label = label,
+            characteristicUuid = VoltraUuidRegistry.VOLTRA_COMMAND_CHARACTERISTIC_UUID,
+            missingMessage = "VOLTRA command characteristic not found.",
+            notWritableMessage = "VOLTRA command characteristic is not writable.",
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendTransportFrames(
+        gatt: BluetoothGatt,
+        command: VoltraControlCommand,
+        frames: List<QueuedFrameSpec>,
+        label: String,
+    ): VoltraCommandResult {
+        return sendFramesToCharacteristic(
+            gatt = gatt,
+            command = command,
+            frames = frames,
+            label = label,
+            characteristicUuid = VoltraUuidRegistry.VOLTRA_TRANSPORT_CHARACTERISTIC_UUID,
+            missingMessage = "VOLTRA transport characteristic not found.",
+            notWritableMessage = "VOLTRA transport characteristic is not writable.",
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendFramesToCharacteristic(
+        gatt: BluetoothGatt,
+        command: VoltraControlCommand,
+        frames: List<QueuedFrameSpec>,
+        label: String,
+        characteristicUuid: String,
+        missingMessage: String,
+        notWritableMessage: String,
+    ): VoltraCommandResult {
+        val commandCharacteristic = gatt.findVoltraCharacteristic(characteristicUuid)
+            ?: return logCommand(
+                VoltraCommandResult(
+                    command = command,
+                    status = VoltraCommandStatus.BLOCKED,
+                    message = missingMessage,
+                    timestampMillis = System.currentTimeMillis(),
+                ),
+            )
+
+        val properties = commandCharacteristic.properties.toGattProperties()
+        if (GattProperty.WRITE !in properties && GattProperty.WRITE_NO_RESPONSE !in properties) {
+            return logCommand(
+                VoltraCommandResult(
+                    command = command,
+                    status = VoltraCommandStatus.BLOCKED,
+                    message = notWritableMessage,
+                    timestampMillis = System.currentTimeMillis(),
+                ),
+            )
+        }
+
+        var lastFrameSize = 0
+        frames.forEach { frame ->
+            lastFrameSize = frame.bytes.size
+            writeQueue += CharacteristicWrite(
+                gatt = gatt,
+                characteristic = commandCharacteristic,
+                packet = VoltraBootstrapPacket(label = frame.label, hex = frame.bytes.toHexString()),
+                characteristicUuid = commandCharacteristic.uuid.toString().uppercase(),
+                command = command,
+            )
+        }
+        startWriteQueueIfIdle()
+        return logCommand(
+            VoltraCommandResult(
+                command = command,
+                status = VoltraCommandStatus.QUEUED,
+                message = "Queued $label frame${if (frames.size == 1) "" else "s"} (${frames.size} total, last len=$lastFrameSize bytes).",
+                timestampMillis = System.currentTimeMillis(),
+            ),
+        )
     }
 
     @SuppressLint("MissingPermission")
@@ -922,6 +1188,203 @@ class AndroidVoltraClient(
             .coerceIn(VoltraControlFrames.MIN_ECCENTRIC_WEIGHT_LB, VoltraControlFrames.MAX_ECCENTRIC_WEIGHT_LB)
     }
 
+    @SuppressLint("MissingPermission")
+    private fun enqueueIsometricVendorRefresh(gatt: BluetoothGatt) {
+        val transportCharacteristic = gatt.findVoltraCharacteristic(VoltraUuidRegistry.VOLTRA_TRANSPORT_CHARACTERISTIC_UUID)
+            ?: return
+        val frameBytes = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_VENDOR,
+            payload = VoltraControlFrames.vendorStateRefreshPayload(),
+            seq = controlSeq++,
+        )
+        writeQueue += CharacteristicWrite(
+            gatt = gatt,
+            characteristic = transportCharacteristic,
+            packet = VoltraBootstrapPacket(
+                label = "refresh vendor state stream (AA13 01)",
+                hex = frameBytes.toHexString(),
+            ),
+            characteristicUuid = transportCharacteristic.uuid.toString().uppercase(),
+            command = VoltraControlCommand.REFRESH_MODE_FEATURE_STATUS,
+        )
+        startWriteQueueIfIdle()
+    }
+
+    private fun shouldRunIsometricVendorRefresh(current: VoltraSessionState): Boolean {
+        val refreshWindowOpen = System.currentTimeMillis() < isometricVendorRefreshUntilMillis
+        val livePullInProgress = current.reading.isometricCurrentForceN != null
+        return current.connectionState == VoltraConnectionState.CONNECTED &&
+            current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
+            (refreshWindowOpen || pendingIsometricLoadIssued || livePullInProgress)
+    }
+
+    private fun reconcileIsometricVendorRefreshLoop() {
+        val current = mutableState.value
+        if (shouldRunIsometricVendorRefresh(current)) {
+            if (pendingIsometricAutoLoad) {
+                pendingIsometricAutoLoad = false
+                stopPendingIsometricAutoLoadLoop()
+            }
+            if (isometricVendorRefreshRunnable == null) {
+                startIsometricVendorRefreshLoop()
+            }
+        } else {
+            stopIsometricVendorRefreshLoop()
+        }
+    }
+
+    private fun startIsometricVendorRefreshLoop() {
+        stopIsometricVendorRefreshLoop()
+        val currentGatt = gatt
+        val current = mutableState.value
+        if (currentGatt == null || !shouldRunIsometricVendorRefresh(current)) {
+            return
+        }
+        enqueueIsometricVendorRefresh(currentGatt)
+        val runnable = object : Runnable {
+            override fun run() {
+                val currentGatt = gatt
+                val current = mutableState.value
+                if (currentGatt == null || !shouldRunIsometricVendorRefresh(current)) {
+                    stopIsometricVendorRefreshLoop()
+                    return
+                }
+                enqueueIsometricVendorRefresh(currentGatt)
+                mainHandler.postDelayed(this, ISOMETRIC_VENDOR_REFRESH_INTERVAL_MILLIS)
+            }
+        }
+        isometricVendorRefreshRunnable = runnable
+        mainHandler.postDelayed(runnable, ISOMETRIC_VENDOR_REFRESH_INTERVAL_MILLIS)
+    }
+
+    private fun stopIsometricVendorRefreshLoop() {
+        isometricVendorRefreshRunnable?.let(mainHandler::removeCallbacks)
+        isometricVendorRefreshRunnable = null
+    }
+
+    private fun requestIsometricVendorRefreshBurst(durationMillis: Long = ISOMETRIC_VENDOR_REFRESH_BURST_MILLIS) {
+        val untilMillis = System.currentTimeMillis() + durationMillis
+        if (untilMillis > isometricVendorRefreshUntilMillis) {
+            isometricVendorRefreshUntilMillis = untilMillis
+        }
+        reconcileIsometricVendorRefreshLoop()
+    }
+
+    private fun activeIsometricRefreshBurstMillis(): Long {
+        val configuredSeconds = mutableState.value.reading.isometricMaxDurationSeconds
+            ?: DEFAULT_ISOMETRIC_MAX_DURATION_SECONDS
+        return (configuredSeconds.coerceIn(3, MAX_ISOMETRIC_REFRESH_BURST_SECONDS) * 1_000L) +
+            ISOMETRIC_VENDOR_REFRESH_TAIL_MILLIS
+    }
+
+    private fun cancelIsometricVendorRefreshBurst() {
+        isometricVendorRefreshUntilMillis = 0L
+        stopIsometricVendorRefreshLoop()
+    }
+
+    private fun stopPendingIsometricAutoLoadLoop(resetLoadIssued: Boolean = false) {
+        pendingIsometricAutoLoadRunnable?.let(mainHandler::removeCallbacks)
+        pendingIsometricAutoLoadRunnable = null
+        pendingIsometricAutoLoadAttempts = 0
+        if (resetLoadIssued) {
+            pendingIsometricLoadIssued = false
+        }
+    }
+
+    private fun isIsometricEnterSettled(nowMillis: Long = System.currentTimeMillis()): Boolean {
+        val enteredAtMillis = lastIsometricEnterAtMillis
+        return enteredAtMillis == 0L || nowMillis - enteredAtMillis >= ISOMETRIC_ENTER_SETTLE_MILLIS
+    }
+
+    private fun schedulePendingIsometricAutoLoad(currentGatt: BluetoothGatt) {
+        stopPendingIsometricAutoLoadLoop()
+        val runnable = object : Runnable {
+            override fun run() {
+                if (!pendingIsometricAutoLoad) {
+                    stopPendingIsometricAutoLoadLoop()
+                    return
+                }
+                maybeAutoLoadIsometric(currentGatt)
+                if (!pendingIsometricAutoLoad) {
+                    stopPendingIsometricAutoLoadLoop()
+                    return
+                }
+                pendingIsometricAutoLoadAttempts += 1
+                if (pendingIsometricAutoLoadAttempts >= ISOMETRIC_AUTO_LOAD_MAX_ATTEMPTS) {
+                    pendingIsometricAutoLoad = false
+                    stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
+                    logCommand(
+                        VoltraCommandResult(
+                            command = VoltraControlCommand.LOAD,
+                            status = VoltraCommandStatus.BLOCKED,
+                            message = "Automatic Isometric load timed out while waiting for the VOLTRA to stay ready.",
+                            timestampMillis = System.currentTimeMillis(),
+                        ),
+                    )
+                    return
+                }
+                mainHandler.postDelayed(this, ISOMETRIC_AUTO_LOAD_RETRY_MILLIS)
+            }
+        }
+        pendingIsometricAutoLoadRunnable = runnable
+        mainHandler.postDelayed(runnable, ISOMETRIC_AUTO_LOAD_INITIAL_DELAY_MILLIS)
+    }
+
+    private fun queueIsometricLoad(currentGatt: BluetoothGatt): VoltraCommandResult {
+        lastIsometricLoadAttemptAtMillis = System.currentTimeMillis()
+        mutableState.update {
+            it.copy(
+                reading = it.reading.clearIsometricTestState().copy(
+                    workoutMode = it.reading.workoutMode ?: "Isometric Test, Ready",
+                ),
+            )
+        }
+        val result = sendTransportFrames(
+            gatt = currentGatt,
+            command = VoltraControlCommand.LOAD,
+            frames = buildList {
+                add(
+                    QueuedFrameSpec(
+                        label = "read Isometric cable position (MC_DEFAULT_OFFLEN_CM + BP_RUNTIME_POSITION_CM)",
+                        bytes = VoltraFrameBuilder.build(
+                            cmd = VoltraControlFrames.CMD_PARAM_READ,
+                            payload = VoltraControlFrames.readIsometricCablePositionPayload(),
+                            seq = controlSeq++,
+                        ),
+                    ),
+                )
+                add(
+                    QueuedFrameSpec(
+                        label = "arm Isometric Test (BP_SET_FITNESS_MODE=1)",
+                        bytes = VoltraFrameBuilder.build(
+                            cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                            payload = VoltraControlFrames.loadIsometricPayload(),
+                            seq = controlSeq++,
+                        ),
+                    ),
+                )
+                add(
+                    QueuedFrameSpec(
+                        label = "refresh Isometric vendor state stream (AA13 01)",
+                        bytes = VoltraFrameBuilder.build(
+                            cmd = VoltraControlFrames.CMD_VENDOR,
+                            payload = VoltraControlFrames.vendorStateRefreshPayload(),
+                            seq = controlSeq++,
+                        ),
+                    ),
+                )
+            },
+            label = "arm Isometric Test (BP_SET_FITNESS_MODE=1)",
+        )
+        pendingIsometricLoadIssued =
+            result.status != VoltraCommandStatus.BLOCKED && result.status != VoltraCommandStatus.FAILED
+        lastIsometricVendorRefreshAtMillis = lastIsometricLoadAttemptAtMillis
+        if (pendingIsometricLoadIssued) {
+            requestIsometricVendorRefreshBurst(activeIsometricRefreshBurstMillis())
+        }
+        return result
+    }
+
     override suspend fun load(): VoltraCommandResult {
         val current = mutableState.value
         val currentGatt = gatt
@@ -935,15 +1398,81 @@ class AndroidVoltraClient(
                 blocked(VoltraControlCommand.LOAD, "Cannot load: $safetyReasons")
             currentGatt == null ->
                 blocked(VoltraControlCommand.LOAD, "No active GATT connection.")
-            current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ->
-                sendParamWriteCommand(
-                    gatt = currentGatt,
-                    command = VoltraControlCommand.LOAD,
-                    paramId = VoltraControlFrames.PARAM_BP_SET_FITNESS_MODE,
-                    valueBytes = VoltraControlFrames.FITNESS_MODE_STRENGTH_LOADED.uint16Le(),
-                    label = "load Isometric Test (BP_SET_FITNESS_MODE=5)",
-                    followUpReadParamIds = MODE_FEATURE_STATUS_PARAMS,
+            current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC -> {
+                val isIsometricLiveScreen = VoltraControlFrames.isIsometricScreenMode(current.safety.fitnessMode) ||
+                    VoltraControlFrames.isLoadEngagedForWorkoutState(
+                        current.safety.fitnessMode,
+                        current.safety.workoutState,
+                    )
+                if (!isIsometricLiveScreen && hasPendingCommand(VoltraControlCommand.LOAD)) {
+                    return logCommand(
+                        VoltraCommandResult(
+                            command = VoltraControlCommand.LOAD,
+                            status = VoltraCommandStatus.QUEUED,
+                            message = "Isometric load is already queued.",
+                            timestampMillis = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+                if (isIsometricLiveScreen && hasPendingCommand(VoltraControlCommand.REFRESH_MODE_FEATURE_STATUS)) {
+                    return logCommand(
+                        VoltraCommandResult(
+                            command = VoltraControlCommand.LOAD,
+                            status = VoltraCommandStatus.QUEUED,
+                            message = "Isometric live refresh is already queued.",
+                            timestampMillis = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+                val now = System.currentTimeMillis()
+                if (!isIsometricLiveScreen && !isIsometricEnterSettled(now)) {
+                    pendingIsometricAutoLoad = true
+                    schedulePendingIsometricAutoLoad(currentGatt)
+                    return logCommand(
+                        VoltraCommandResult(
+                            command = VoltraControlCommand.LOAD,
+                            status = VoltraCommandStatus.QUEUED,
+                            message = "Waiting for Isometric Test to settle before loading.",
+                            timestampMillis = now,
+                        ),
+                    )
+                }
+                if (!isIsometricLiveScreen && (inFlightWrite != null || writeQueue.isNotEmpty())) {
+                    pendingIsometricAutoLoad = true
+                    schedulePendingIsometricAutoLoad(currentGatt)
+                    return logCommand(
+                        VoltraCommandResult(
+                            command = VoltraControlCommand.LOAD,
+                            status = VoltraCommandStatus.QUEUED,
+                            message = "Waiting for current Isometric commands to finish before loading.",
+                            timestampMillis = now,
+                        ),
+                    )
+                }
+                if (!isIsometricLiveScreen) {
+                    pendingIsometricAutoLoad = true
+                    stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
+                    return queueIsometricLoad(currentGatt)
+                }
+                mutableState.update {
+                    it.copy(
+                        reading = it.reading.clearIsometricTestState().copy(
+                            workoutMode = it.reading.workoutMode ?: "Isometric Test, Ready",
+                        ),
+                    )
+                }
+                pendingIsometricLoadIssued = true
+                lastIsometricVendorRefreshAtMillis = now
+                requestIsometricVendorRefreshBurst(activeIsometricRefreshBurstMillis())
+                logCommand(
+                    VoltraCommandResult(
+                        command = VoltraControlCommand.LOAD,
+                        status = VoltraCommandStatus.QUEUED,
+                        message = "Queued Isometric live refresh.",
+                        timestampMillis = now,
+                    ),
                 )
+            }
             else -> sendParamWriteCommands(
                 gatt = currentGatt,
                 command = VoltraControlCommand.LOAD,
@@ -984,14 +1513,36 @@ class AndroidVoltraClient(
                 blocked(VoltraControlCommand.UNLOAD, "Cannot unload while the VOLTRA is not connected.")
             currentGatt == null ->
                 blocked(VoltraControlCommand.UNLOAD, "No active GATT connection.")
-            else -> sendParamWriteCommand(
-                gatt = currentGatt,
-                command = VoltraControlCommand.UNLOAD,
-                paramId = VoltraControlFrames.PARAM_BP_SET_FITNESS_MODE,
-                valueBytes = VoltraControlFrames.FITNESS_MODE_STRENGTH_READY.uint16Le(),
-                label = "unload (BP_SET_FITNESS_MODE=4)",
-                followUpReadParamIds = MODE_FEATURE_STATUS_PARAMS,
-            )
+            else -> {
+                cancelIsometricVendorRefreshBurst()
+                pendingIsometricAutoLoad = false
+                stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
+                if (
+                    current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ||
+                    current.reading.workoutMode?.startsWith("Isometric Test") == true
+                ) {
+                    mutableState.update {
+                        it.copy(
+                            reading = it.reading.copy(workoutMode = "Isometric Test, Ready"),
+                            safety = it.safety.copy(
+                                canLoad = true,
+                                reasons = listOf("Ready for current mode load."),
+                                parsedDeviceState = true,
+                                workoutState = VoltraControlFrames.WORKOUT_STATE_ISOMETRIC,
+                                fitnessMode = VoltraControlFrames.FITNESS_MODE_STRENGTH_READY,
+                            ),
+                        )
+                    }
+                }
+                sendParamWriteCommand(
+                    gatt = currentGatt,
+                    command = VoltraControlCommand.UNLOAD,
+                    paramId = VoltraControlFrames.PARAM_BP_SET_FITNESS_MODE,
+                    valueBytes = VoltraControlFrames.FITNESS_MODE_STRENGTH_READY.uint16Le(),
+                    label = "unload (BP_SET_FITNESS_MODE=4)",
+                    followUpReadParamIds = MODE_FEATURE_STATUS_PARAMS,
+                )
+            }
         }
     }
 
@@ -1128,14 +1679,41 @@ class AndroidVoltraClient(
                 blocked(VoltraControlCommand.EXIT_WORKOUT, "Cannot exit the workout while the VOLTRA is not connected.")
             currentGatt == null ->
                 blocked(VoltraControlCommand.EXIT_WORKOUT, "No active GATT connection.")
-            else -> sendParamWriteCommand(
-                gatt = currentGatt,
-                command = VoltraControlCommand.EXIT_WORKOUT,
-                paramId = VoltraControlFrames.PARAM_FITNESS_WORKOUT_STATE,
-                valueBytes = byteArrayOf(VoltraControlFrames.WORKOUT_STATE_INACTIVE.toByte()),
-                label = "exit active workout (FITNESS_WORKOUT_STATE=0)",
-                followUpReadParamIds = MODE_FEATURE_STATUS_PARAMS,
-            )
+            else -> {
+                cancelIsometricVendorRefreshBurst()
+                pendingIsometricAutoLoad = false
+                stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
+                if (
+                    current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ||
+                    current.reading.workoutMode?.startsWith("Isometric Test") == true
+                ) {
+                    mutableState.update {
+                        it.copy(
+                            reading = it.reading.copy(workoutMode = "Strength ready, session inactive"),
+                            safety = it.safety.copy(
+                                canLoad = false,
+                                reasons = listOf("Workout session is inactive. Choose a mode first."),
+                                parsedDeviceState = true,
+                                workoutState = VoltraControlFrames.WORKOUT_STATE_INACTIVE,
+                                fitnessMode = VoltraControlFrames.FITNESS_MODE_STRENGTH_READY,
+                            ),
+                        )
+                    }
+                }
+                sendParamWriteCommands(
+                    gatt = currentGatt,
+                    command = VoltraControlCommand.EXIT_WORKOUT,
+                    label = "exit active workout (FITNESS_WORKOUT_STATE=0)",
+                    specs = listOf(
+                        ParamWriteSpec(
+                            paramId = VoltraControlFrames.PARAM_FITNESS_WORKOUT_STATE,
+                            valueBytes = byteArrayOf(VoltraControlFrames.WORKOUT_STATE_INACTIVE.toByte()),
+                            label = "exit active workout (FITNESS_WORKOUT_STATE=0)",
+                        ),
+                    ),
+                    followUpReadParamIds = MODE_FEATURE_STATUS_PARAMS,
+                )
+            }
         }
     }
 
@@ -1426,6 +2004,9 @@ class AndroidVoltraClient(
                     writeQueue.clear()
                     notificationAssemblers.clear()
                     serviceDiscoveryStarted = false
+                    cancelIsometricVendorRefreshBurst()
+                    pendingIsometricAutoLoad = false
+                    stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
                     mainHandler.removeCallbacksAndMessages(null)
                     runReadOnlyBootstrapAfterSubscribe = false
                     val disconnectedAt = System.currentTimeMillis()
@@ -1841,8 +2422,15 @@ class AndroidVoltraClient(
             direction = direction,
         )
         val now = frame.timestampMillis
+        var nextReadingSnapshot: VoltraReading? = null
+        var nextSafetySnapshot: VoltraSafetyState? = null
+        var priorSafetySnapshot: VoltraSafetyState? = null
+        var clearedFreshIsometricAttempt = false
         mutableState.update {
-            val nextReading = if (inboundFrame) {
+            priorSafetySnapshot = it.safety
+            val previousReading = it.reading
+            val previousSafety = it.safety
+            var nextReading = if (inboundFrame) {
                 VoltraNotificationParser.mergeReading(it.reading, value, now)
             } else {
                 it.reading
@@ -1852,6 +2440,26 @@ class AndroidVoltraClient(
             } else {
                 it.safety
             }
+            val wasIsometricLoaded = VoltraControlFrames.isLoadEngagedForWorkoutState(
+                previousSafety.fitnessMode,
+                previousSafety.workoutState,
+            )
+            val isIsometricLoaded = VoltraControlFrames.isLoadEngagedForWorkoutState(
+                nextSafety.fitnessMode,
+                nextSafety.workoutState,
+            )
+            val enteringFreshIsometricLoad =
+                nextSafety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
+                    isIsometricLoaded &&
+                    !wasIsometricLoaded
+            if (enteringFreshIsometricLoad) {
+                nextReading = nextReading.clearIsometricTestState().copy(
+                    workoutMode = nextReading.workoutMode ?: previousReading.workoutMode,
+                )
+                clearedFreshIsometricAttempt = true
+            }
+            nextReadingSnapshot = nextReading
+            nextSafetySnapshot = nextSafety
             it.copy(
                 reading = nextReading,
                 safety = nextSafety,
@@ -1866,6 +2474,190 @@ class AndroidVoltraClient(
                 statusMessage = "Captured ${value.size} bytes from ${characteristic.uuid}.",
             )
         }
+        if (clearedFreshIsometricAttempt) {
+            Log.d(ISO_DEBUG_TAG, "fresh Isometric load detected; cleared retained graph/result state")
+        }
+        traceIsometricFrame(
+            characteristicUuid = characteristic.uuid.toString().uppercase(),
+            parsedPacket = parsedPacket,
+            direction = direction,
+            value = value,
+            beforeSafety = priorSafetySnapshot,
+            afterSafety = nextSafetySnapshot,
+            afterReading = nextReadingSnapshot,
+        )
+        if (
+            inboundFrame &&
+            nextSafetySnapshot?.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
+            nextReadingSnapshot?.hasLiveIsometricAttempt() == true
+        ) {
+            pendingIsometricAutoLoad = false
+            pendingIsometricLoadIssued = false
+            stopPendingIsometricAutoLoadLoop()
+        }
+        reconcileIsometricVendorRefreshLoop()
+        maybeAutoLoadIsometric(gatt)
+    }
+
+    private fun traceIsometricFrame(
+        characteristicUuid: String,
+        parsedPacket: Any?,
+        direction: RawFrameDirection,
+        value: ByteArray,
+        beforeSafety: VoltraSafetyState?,
+        afterSafety: VoltraSafetyState?,
+        afterReading: VoltraReading?,
+    ) {
+        val isIsometricState = beforeSafety?.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ||
+            afterSafety?.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC
+        val packet = parsedPacket as? com.technogizguy.voltra.controller.protocol.ParsedVoltraPacket
+        val payload0 = packet?.payload?.firstOrNull()?.toInt()?.and(0xFF)
+        val isIsometricControlWrite = packet?.let {
+            it.commandId == VoltraControlFrames.CMD_PARAM_WRITE && it.payload.size >= 4 && run {
+                val paramId = (it.payload[2].toInt() and 0xFF) or ((it.payload[3].toInt() and 0xFF) shl 8)
+                paramId == VoltraControlFrames.PARAM_BP_SET_FITNESS_MODE ||
+                    paramId == VoltraControlFrames.PARAM_FITNESS_WORKOUT_STATE ||
+                    paramId == VoltraControlFrames.PARAM_EP_SCR_SWITCH
+            }
+        } == true
+        val isIsometricPacket = packet?.let {
+            it.commandId == 0xB4 ||
+                (it.commandId == VoltraControlFrames.CMD_VENDOR && payload0 in setOf(0x13, 0x80, 0x81, 0x92, 0x93))
+        } == true
+        val isIsometricCommandWindow =
+            hasPendingCommand(VoltraControlCommand.ENTER_ISOMETRIC_MODE) ||
+                hasPendingCommand(VoltraControlCommand.LOAD) ||
+                hasPendingCommand(VoltraControlCommand.REFRESH_MODE_FEATURE_STATUS) ||
+                inFlightWrite?.command in setOf(
+                    VoltraControlCommand.ENTER_ISOMETRIC_MODE,
+                    VoltraControlCommand.LOAD,
+                    VoltraControlCommand.REFRESH_MODE_FEATURE_STATUS,
+                )
+        val shouldTraceRawFrame = direction == RawFrameDirection.NOTIFY &&
+            characteristicUuid in CONFIRMED_RESPONSE_CHARACTERISTICS.union(
+                setOf(VoltraUuidRegistry.VOLTRA_NOTIFY_CHARACTERISTIC_UUID),
+            ) &&
+            (isIsometricState || isIsometricCommandWindow)
+        if (packet == null) {
+            if (shouldTraceRawFrame) {
+                Log.d(
+                    ISO_DEBUG_TAG,
+                    "dir=$direction char=$characteristicUuid raw len=${value.size} head=${value.take(8).toByteArray().toHexString()} hex=${value.toHexString()}",
+                )
+            }
+            return
+        }
+        if (!isIsometricState && !isIsometricControlWrite && !isIsometricPacket && !isIsometricCommandWindow) return
+        val legacyTelemetryDetail =
+            if (packet.commandId == 0xAA && payload0 == 0x81) {
+                buildLegacyIsometricTelemetryDetail(packet.payload)
+            } else {
+                null
+            }
+        val detailSuffix = when {
+            legacyTelemetryDetail != null -> " $legacyTelemetryDetail"
+            packet.commandId == 0x10 && payload0 == 0x01 ->
+                " asyncWords=${packet.payload.toWordHexString()}"
+            packet.commandId == 0xA7 && payload0 == 0x41 ->
+                " deviceWords=${packet.payload.toWordHexString()}"
+            packet.commandId == 0xB4 ->
+                " b4Words=${packet.payload.toWordHexString()}"
+            packet.commandId == VoltraControlFrames.CMD_VENDOR && payload0 in setOf(0x80, 0x92, 0x93) ->
+                " vendorWords=${packet.payload.toWordHexString()}"
+            else -> ""
+        }
+        Log.d(
+            ISO_DEBUG_TAG,
+            "dir=$direction char=$characteristicUuid cmd=0x${packet.commandId.toString(16)} p0=${payload0?.let { "0x" + it.toString(16) } ?: "--"} " +
+                "mode=${afterSafety?.fitnessMode} workout=${afterSafety?.workoutState} loaded=${afterSafety?.let { VoltraControlFrames.isLoadEngagedForWorkoutState(it.fitnessMode, it.workoutState) }} " +
+                "force=${afterReading?.isometricCurrentForceN} peak=${afterReading?.isometricPeakForceN} rel=${afterReading?.isometricPeakRelativeForcePercent} " +
+                "elapsed=${afterReading?.isometricElapsedMillis} samples=${afterReading?.isometricWaveformSamplesN?.size} " +
+                "carrier=${afterReading?.isometricCarrierForceN} carrierP=${afterReading?.isometricCarrierStatusPrimary} carrierS=${afterReading?.isometricCarrierStatusSecondary} " +
+                "hex=${value.toHexString()}$detailSuffix"
+        )
+    }
+
+    private fun buildLegacyIsometricTelemetryDetail(payload: ByteArray): String? {
+        if (payload.size < LEGACY_ISO_DEBUG_FORCE_WORD_OFFSET + 2) return null
+        val primary = payload.u16le(LEGACY_ISO_DEBUG_STATUS_PRIMARY_OFFSET)
+        val secondary = payload.u16le(LEGACY_ISO_DEBUG_STATUS_SECONDARY_OFFSET)
+        val tick = payload.u32le(LEGACY_ISO_DEBUG_TICK_OFFSET)
+        val forceWord = payload.u16le(LEGACY_ISO_DEBUG_FORCE_WORD_OFFSET)
+        val branch = when {
+            secondary == 12 -> "live12"
+            primary == 0 && secondary == 1 -> "coarse1"
+            secondary == 10 -> "armed10"
+            secondary == 11 -> "done11"
+            secondary == 2 -> "ready2"
+            secondary == 3 -> "progress3"
+            secondary == 4 -> "active4"
+            else -> "other"
+        }
+        return "legacyP=$primary legacyS=$secondary legacyTick=$tick legacyForceWord=$forceWord legacyBranch=$branch"
+    }
+
+    private fun ByteArray.toWordHexString(): String =
+        indices
+            .step(2)
+            .map { index ->
+                if (index + 1 < size) {
+                    "%02X%02X".format(this[index + 1].toInt() and 0xFF, this[index].toInt() and 0xFF)
+                } else {
+                    "%02X".format(this[index].toInt() and 0xFF)
+                }
+            }
+            .joinToString(",")
+
+    private fun ByteArray.u16le(offset: Int): Int {
+        if (offset + 1 >= size) return 0
+        return (this[offset].toInt() and 0xFF) or ((this[offset + 1].toInt() and 0xFF) shl 8)
+    }
+
+    private fun ByteArray.u32le(offset: Int): Long {
+        if (offset + 3 >= size) return 0L
+        return (this[offset].toLong() and 0xFFL) or
+            ((this[offset + 1].toLong() and 0xFFL) shl 8) or
+            ((this[offset + 2].toLong() and 0xFFL) shl 16) or
+            ((this[offset + 3].toLong() and 0xFFL) shl 24)
+    }
+
+    private fun maybeAutoLoadIsometric(currentGatt: BluetoothGatt) {
+        if (!pendingIsometricAutoLoad) return
+        val current = mutableState.value
+        if (current.reading.hasLiveIsometricAttempt()) {
+            pendingIsometricAutoLoad = false
+            pendingIsometricLoadIssued = false
+            stopPendingIsometricAutoLoadLoop()
+            return
+        }
+        if (shouldRunIsometricVendorRefresh(current)) {
+            pendingIsometricAutoLoad = false
+            stopPendingIsometricAutoLoadLoop()
+            return
+        }
+        if (current.connectionState != VoltraConnectionState.CONNECTED) return
+        if (current.safety.workoutState != VoltraControlFrames.WORKOUT_STATE_ISOMETRIC) return
+        if (hasPendingCommand(VoltraControlCommand.ENTER_ISOMETRIC_MODE)) return
+        val now = System.currentTimeMillis()
+        if (!pendingIsometricLoadIssued) {
+            if (!isIsometricEnterSettled(now)) return
+            if (!current.safety.canLoad) return
+            if (inFlightWrite != null || writeQueue.isNotEmpty()) return
+            if (hasPendingCommand(VoltraControlCommand.LOAD)) return
+            queueIsometricLoad(currentGatt)
+            return
+        }
+        if (now - lastIsometricVendorRefreshAtMillis < ISOMETRIC_AUTO_LOAD_RETRY_MILLIS) {
+            return
+        }
+        if (inFlightWrite != null) return
+        if (writeQueue.any { it.command == VoltraControlCommand.REFRESH_MODE_FEATURE_STATUS }) return
+        enqueueIsometricVendorRefresh(currentGatt)
+        lastIsometricVendorRefreshAtMillis = now
+    }
+
+    private fun hasPendingCommand(command: VoltraControlCommand): Boolean {
+        return inFlightWrite?.command == command || writeQueue.any { it.command == command }
     }
 
     private fun nextProtocolStatus(
@@ -1986,6 +2778,16 @@ class AndroidVoltraClient(
                 },
             )
         }
+        if (result.command in setOf(
+                VoltraControlCommand.ENTER_ISOMETRIC_MODE,
+                VoltraControlCommand.LOAD,
+                VoltraControlCommand.UNLOAD,
+                VoltraControlCommand.EXIT_WORKOUT,
+                VoltraControlCommand.REFRESH_MODE_FEATURE_STATUS,
+            )
+        ) {
+            Log.d(ISO_DEBUG_TAG, "command=${result.command} status=${result.status} msg=${result.message}")
+        }
         return result
     }
 
@@ -2006,6 +2808,20 @@ class AndroidVoltraClient(
         private const val MAX_CAPTURED_FRAMES = 500
         private const val MAX_COMMAND_LOG = 100
         private const val BOOTSTRAP_WRITE_PACING_MILLIS = 90L
+        private const val ISOMETRIC_VENDOR_REFRESH_INTERVAL_MILLIS = 500L
+        private const val ISOMETRIC_VENDOR_REFRESH_BURST_MILLIS = 3_000L
+        private const val ISOMETRIC_VENDOR_REFRESH_TAIL_MILLIS = 1_500L
+        private const val ISOMETRIC_AUTO_LOAD_INITIAL_DELAY_MILLIS = 850L
+        private const val ISOMETRIC_ENTER_SETTLE_MILLIS = 850L
+        private const val ISOMETRIC_AUTO_LOAD_RETRY_MILLIS = 650L
+        private const val ISOMETRIC_AUTO_LOAD_MAX_ATTEMPTS = 8
+        private const val DEFAULT_ISOMETRIC_MAX_DURATION_SECONDS = 15
+        private const val MAX_ISOMETRIC_REFRESH_BURST_SECONDS = 20
+        private const val ISO_DEBUG_TAG = "VoltraIsoDebug"
+        private const val LEGACY_ISO_DEBUG_STATUS_PRIMARY_OFFSET = 11
+        private const val LEGACY_ISO_DEBUG_STATUS_SECONDARY_OFFSET = 13
+        private const val LEGACY_ISO_DEBUG_TICK_OFFSET = 27
+        private const val LEGACY_ISO_DEBUG_FORCE_WORD_OFFSET = 43
         private const val VOLTRA_MTU = 517
         private const val MTU_FALLBACK_DELAY_MILLIS = 1_500L
         private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -2080,6 +2896,11 @@ private data class ParamWriteSpec(
     val label: String,
 )
 
+private data class QueuedFrameSpec(
+    val label: String,
+    val bytes: ByteArray,
+)
+
 private fun Weight.toCommandPounds(min: Int, max: Int): Int {
     val pounds = when (unit) {
         WeightUnit.LB -> value
@@ -2102,6 +2923,28 @@ private fun Int.uint32Le(): ByteArray {
         ((this shr 16) and 0xFF).toByte(),
         ((this shr 24) and 0xFF).toByte(),
     )
+}
+
+private fun VoltraReading.clearIsometricTestState(): VoltraReading {
+    return copy(
+        isometricCurrentForceN = null,
+        isometricPeakForceN = null,
+        isometricPeakRelativeForcePercent = null,
+        isometricElapsedMillis = null,
+        isometricTelemetryTick = null,
+        isometricTelemetryStartTick = null,
+        isometricCarrierForceN = null,
+        isometricCarrierStatusPrimary = null,
+        isometricCarrierStatusSecondary = null,
+        isometricWaveformSamplesN = emptyList(),
+        isometricWaveformLastChunkIndex = null,
+    )
+}
+
+private fun VoltraReading.hasLiveIsometricAttempt(): Boolean {
+    return isometricCurrentForceN != null ||
+        isometricWaveformSamplesN.isNotEmpty() ||
+        (isometricPeakForceN != null && isometricElapsedMillis != null)
 }
 
 private const val KG_TO_LB = 2.2046226218

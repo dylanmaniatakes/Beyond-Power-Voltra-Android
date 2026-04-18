@@ -139,7 +139,7 @@
   - Eccentric weight is now confirmed as a direct `cmd=0x11` write to `0x3E88` / `BP_ECCENTRIC_WEIGHT`, but the value semantics are signed int16 pounds even though `paramInfo.csv` labels the field `uint16`. Official writes included raw `F1 FF` for -15 lb and `EC FF` for -20 lb. The -20 lb frame was `55130403AA1023002000110100883EECFFC8C6`.
   - Android now decodes `BP_ECCENTRIC_WEIGHT` with signed int16 semantics.
   - `0x53B0` / `FITNESS_INVERSE_CHAIN` was observed only as value `0`; inverse-on remains unconfirmed.
-  - In this feature flow, the official app wrote `BP_SET_FITNESS_MODE=1` before the device reported loaded state `5`, and wrote `BP_SET_FITNESS_MODE=0` before the device reported ready state `4`. Android keeps the previously hardware-tested `5`/`4` strength load/unload writes until a clean capture proves whether the `1`/`0` form is a general shortcut or a mode-dependent command.
+  - In this feature flow, the official app wrote `BP_SET_FITNESS_MODE=1` before the device reported loaded state `5`, and wrote `BP_SET_FITNESS_MODE=0` before the device reported ready state `4`. Android now treats the `1 -> 5` progression as the dedicated Isometric / mode-arm sequence, while normal strength load/unload stays on the direct `5` / `4` writes.
   - Resistance Band clues: `FITNESS_WORKOUT_STATE=2` appears to enter Resistance Band mode, a `cmd=0x0F` read probes `MC_DEFAULT_OFFLEN_CM` (`0x506A`) and `BP_RUNTIME_POSITION_CM` (`0x3E82`), and `BP_SET_FITNESS_MODE=1` appears to load/start the current mode. Later captures replaced this with confirmed `BP_SET_FITNESS_MODE=5` load/start.
   - Curated capture notes are in `captures/2026-04-15-weight-chains-eccentric-resistance-band.md`.
 - Android diagnostic `text-0 23.txt` confirmed the strength-feature range should be dynamic, not fixed to the first captured values:
@@ -194,14 +194,50 @@
   - this is now safe enough for a real Weight Training Assist toggle in Android
 - `sysdiagnose_2026.04.15_20-29-37-0400_iPhone-OS_iPad_22F76` is the first clean Isometric Test capture:
   - official app enters Isometric Test with `0x4FB0 FITNESS_WORKOUT_STATE = 8`
-  - the page appears passive/read-only from BLE control perspective; no dedicated control writes were observed beyond the mode entry and exit
+  - the page is not fully passive: entering the screen is still `FITNESS_WORKOUT_STATE = 8`, but arming the test uses the same shared load path as other modes once the screen is ready
   - passive reads include `0x5431 ISOMETRIC_MAX_FORCE = 400 lb` and `0x53D2 ISOMETRIC_MAX_DURATION = 15 s`
-  - `BP_SET_FITNESS_MODE` reports `0x0085` while the Isometric page is open, which looks like a generic test-screen mode rather than a loadable workout-ready state
+  - `BP_SET_FITNESS_MODE` reports `0x0085` while the live Isometric test screen is active; Android should treat that as the loaded/live test state, not as another ready-to-load state
+- `sysdiagnose_2026.04.16_20-09-27-0400_iPhone-OS_iPad_22F76` plus the matching screen recording tightened the Isometric UX model:
+  - official UI is a dedicated realtime test screen with a live force graph and six metrics: current force, elapsed time, peak force, RFD 0-100 ms, time to peak, and impulse 0-100 ms
+  - the test flow is `enter screen -> load weight -> pull -> finish/unload`; it behaves like a single-test screen, not a regular workout card
+  - current Android alpha now mirrors that layout more closely and computes the derived metrics locally from the live force stream instead of waiting for a hidden summary packet
+  - the graph itself is not driven only by the older `0xB4` sample packets; this capture also includes chunked `0xAA 0x93 0xCC` waveform messages that carry the realtime graph samples in indexed batches
+  - this metric derivation is an inference from the official UI plus the confirmed Isometric sample stream, not a claim that the VOLTRA sends those derived values directly over BLE
+- `sysdiagnose_2026.04.16_21-16-51-0400_iPhone-OS_iPad_22F76` added a newer Isometric `0xB4` stream layout:
+  - the official capture also includes many `0xB4` payloads in the older `lb + variant + sample-rate` family, but with `variant = 3` (`0000030012002A00`, `0D00030000003200`, etc.); Android needs to accept that `variant 3` stream because it appears throughout the live test window
+  - another `0xB4` shape is still present with a larger trailer/limit word (`0x0FA0 = 4000` observed), so the parser still needs to tolerate both layouts
+  - Android now accepts the older and newer `0xB4` layouts and uses the resulting force samples as a graph fallback when chunked `0xAA 0x93` waveform packets are absent
+  - the recurring `0xAA 0x81 0x2B` Isometric ready/armed heartbeat can still appear around these sessions, but its `0x0FA0` trailer word behaves like a limit/status field rather than live force; those frames should only preserve a completed test when real live samples have already been accumulated
+- Device personalization captures now confirm two distinct states:
+  - startup image transfer is a real BLE media upload using `cmd=0xAD`: `AD02` header/start, many `AD03` chunks, `AD04` finalize, `AD05` apply
+  - unlike the small identity write for rename, the official app sends the `0xAD` family over the VOLTRA transport characteristic (`A010...` / handle `0x0035` in the iPad captures), and the device emits short `AD 00 03` notify acknowledgements on `55CA...` while the upload is in flight
+  - custom photo uploads reconstruct to a `720x720` JPEG, so the practical Android path is `Photo Picker -> crop/resize to 720x720 -> JPEG -> BLE chunk transfer`
+  - device-name change uses `cmd=0x4E` on the command characteristic with a fixed null-padded ASCII payload (`21` bytes total); the device replies with a short `cmd=0x4E payload=00` success frame
+  - the connected-name response is still `cmd=0x4F`, which returns the current ASCII name plus the device suffix / address bytes
+  - device-name change definitely propagates to the VOLTRA network identity (`_voltra._voltra._tcp.local` / mDNS)
+  - the matching iPad videos confirm the current "More" surfaces tied to this area: `Modify Name`, `Customize Logo`, `Firmware Update`, `Fetch Log`, `Advanced`, and `Wi-Fi Provisioning`
+  - the rename dialog itself enforces product constraints that are worth treating as protocol-side guardrails even before the write is fully decoded: `1..20` ASCII characters, first character must be a letter, and the dialog explicitly rejects at least `:`, `\`, and `|`
+  - the startup-image flow shows a device-frame preview with `Cancel`, `Preview`, and `Apply`; the sampled videos do not show a separate transform UI, which still fits the current working theory that the app preprocesses the selected image before the BLE `0xAD` upload family begins
+  - the official custom-photo `AD02` header currently reconstructs as: `[02 01][FFFF][00000000][width=720][height=720][00000000][image-fingerprint?][0000][chunkCountLE]`
+  - the `AD03` transport packets in the official capture use `208` image bytes per chunk (`224` bytes total frame length), so Android should match that chunk size instead of relying on oversized transport frames
+  - the earlier guessed extra `EP_LOGO_APPLY_ACTION` write does not appear in the official custom-photo capture; the BLE path seen so far is `AD02 -> AD03* -> AD04 -> AD05`
+  - the newer `sysdiagnose_2026.04.17_19-32-12-0400_iPhone-OS_iPad_22F76` Isometric capture shows the official app sending repeated vendor writes `cmd=0xAA payload=13 01` throughout the active test window, not just once at entry; the realtime graph `0xAA 0x93` waveform packets only show up after load and continue while those refreshes are in flight
+  - the same capture shows the official Isometric load sequence as: `0x11 4FB0=8` (enter test) -> `0x0F read [506A, 3E82]` (cable offset + runtime position) -> `0x11 3E89=5` (load) -> repeating `0xAA 13 01`; Android should follow that order instead of refreshing vendor state before the actual load write
+  - the cleaner `sysdiagnose_2026.04.16_20-09-27-0400_iPhone-OS_iPad_22F76` Isometric screen capture also shows a successful live `0xB4` burst while the device is still reporting `0x3E89 = 0x0085` (`FITNESS_MODE_TEST_SCREEN`), which means Android should not require a separate `0x3E89 = 5` transition before it starts refreshing and accepting live graph packets
+  - the same capture shows `0xAA 0x80 0x25` summary packets arriving both before load and again after exit, which makes them unsafe as a primary result source; they should be treated as stale/fallback metadata rather than authoritative live or final test values
+  - comparing the official `0xAA 0x93` waveform payload against the on-device result screen suggests those waveform samples are stored as tenths of pounds, not raw Newtons; converting `0x01D2..0x01DF` style peaks to pounds then to Newtons lands very close to the photographed `215 N` result
 - `sysdiagnose_2026.04.15_20-36-03-0400_iPhone-OS_iPad_22F76` and `sysdiagnose_2026.04.15_20-44-11-0400_iPhone-OS_iPad_22F76` are the first focused Custom Curve captures:
   - the official app traffic is dominated by `cmd=0xAA` vendor messages rather than normal `cmd=0x11` parameter writes
   - repeated `0xAA 0x13` app writes appear to drive editor/apply steps, while `0xAA 0x80`, `0xAA 0x86`, and `0xAA 0x92` responses carry slot metadata and larger curve payloads
   - the earlier CSV candidates `0x539C CUSTOM_CURVE_ID`, `0x3E90 APP_STORAGE_SETTINGS_FORCE_CURVE_CHOOSE`, and `0x3E8F FORCE_CURVE_UPDATE` did not show up directly in these captures
   - Android should keep Custom Curve behind Developer Mode and treat it as notes-only until the `0xAA` message family is mapped safely
+- Decompilation plus the newer iPad videos point at several still-unresolved but now better-scoped feature families:
+  - startup-logo positioning / presentation candidates exist in the CSV even though the official traffic still looks mostly `cmd=0xAD`-driven: `0x5448 CUSTOM_LOGO_X`, `0x5449 CUSTOM_LOGO_Y`, `0x544A CUSTOM_LOGO_BG_COLOR`, and `0x51F8 EP_LOGO_APPLY_ACTION`
+  - Custom Curve still has promising named params (`0x539C CUSTOM_CURVE_ID`, `0x3E90 APP_STORAGE_SETTINGS_FORCE_CURVE_CHOOSE`, `0x5171 APP_STORAGE_SETTINGS_FORCE_CURVE_UPDATE`, `0x3E8F FORCE_CURVE_UPDATE`), but the focused captures reinforce that the user-facing editor/apply flow is probably orchestrated by the `0xAA` vendor family rather than plain `cmd=0x11` writes
+  - the official app also emits repeated vendor writes `cmd=0xAA payload=13 01` around Isometric entry/load, and those may be part of the missing live-stream trigger path
+  - Isometric has additional named knobs in the CSV that match visible iPad concepts but are not yet tied to safe Android UI writes: `0x53D1 ISOMETRIC_METRICS_TYPE` and body-weight related params `0x535A EP_ISOMETRIC_TESTING_BODY_WEIGHT_N`, `0x535B EP_ISOMETRIC_TESTING_BODY_WEIGHT_100G`, `0x535C EP_ISOMETRIC_TESTING_BODY_WEIGHT_LBS`
+  - the `0xAA 0x80 0x25` family now looks like a partial Isometric result summary rather than generic noise: the captured Android packet `802505000500...00050300010000640001EC0200...` lines up with `peak force ~= 77.3 N` (`0x0305 / 10`), `peak relative force = 10.0%` (`0x0064 / 10`), and `duration = 2 s` (`0x0002`); newer hardware evidence shows it can disagree with the full on-device result screen, so Android should treat it as a fallback only and not let it override a real live `0xB4` sample stream
+  - the recurring async state payload seen around Isometric sessions, `02000F52011F5200000000`, decodes to `0x520F BP_SPORT_MODE = 1` and `0x521F EP_COWORKER_REMOTE_ST = 0`; those fields look like generic mode/session metadata rather than the missing realtime graph or summary transport
 
 ## CRC Algorithms (Cracked 2026-04-14)
 

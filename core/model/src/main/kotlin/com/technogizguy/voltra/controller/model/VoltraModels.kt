@@ -17,9 +17,26 @@ data class Weight(
 
     fun display(): String = "${trim(value)} ${unit.label}"
 
+    fun toUnit(targetUnit: WeightUnit): Weight {
+        if (unit == targetUnit) return this
+        val pounds = when (unit) {
+            WeightUnit.LB -> value
+            WeightUnit.KG -> value * POUNDS_PER_KILOGRAM
+        }
+        val converted = when (targetUnit) {
+            WeightUnit.LB -> pounds
+            WeightUnit.KG -> pounds / POUNDS_PER_KILOGRAM
+        }
+        return Weight(converted, targetUnit)
+    }
+
     private fun trim(number: Double): String {
         val rounded = kotlin.math.round(number * 10.0) / 10.0
         return if (rounded % 1.0 == 0.0) rounded.toInt().toString() else rounded.toString()
+    }
+
+    private companion object {
+        const val POUNDS_PER_KILOGRAM = 2.2046226218
     }
 }
 
@@ -93,9 +110,15 @@ data class VoltraReading(
     val isometricMaxDurationSeconds: Int? = null,
     val isometricCurrentForceN: Double? = null,
     val isometricPeakForceN: Double? = null,
+    val isometricPeakRelativeForcePercent: Double? = null,
     val isometricElapsedMillis: Long? = null,
     val isometricTelemetryTick: Long? = null,
     val isometricTelemetryStartTick: Long? = null,
+    val isometricCarrierForceN: Double? = null,
+    val isometricCarrierStatusPrimary: Int? = null,
+    val isometricCarrierStatusSecondary: Int? = null,
+    val isometricWaveformSamplesN: List<Double> = emptyList(),
+    val isometricWaveformLastChunkIndex: Int? = null,
     val setCount: Int? = null,
     val repCount: Int? = null,
     val repPhase: String? = null,
@@ -145,6 +168,8 @@ enum class VoltraControlCommand {
     SET_ISOKINETIC_SPEED,
     SET_ISOKINETIC_CONSTANT_RESISTANCE,
     SET_ISOKINETIC_MAX_ECCENTRIC_LOAD,
+    SET_DEVICE_NAME,
+    UPLOAD_STARTUP_IMAGE,
     LOAD_RESISTANCE_BAND,
     TRIGGER_CABLE_LENGTH_MODE,
     SET_CABLE_OFFSET,

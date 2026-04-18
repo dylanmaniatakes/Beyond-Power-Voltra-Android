@@ -60,6 +60,10 @@ interface VoltraClient {
 
     suspend fun setCableOffsetCm(offsetCm: Int): VoltraCommandResult
 
+    suspend fun setDeviceName(name: String): VoltraCommandResult
+
+    suspend fun uploadStartupImage(jpegBytes: ByteArray): VoltraCommandResult
+
     suspend fun refreshModeFeatureStatus(): VoltraCommandResult
 
     suspend fun load(): VoltraCommandResult

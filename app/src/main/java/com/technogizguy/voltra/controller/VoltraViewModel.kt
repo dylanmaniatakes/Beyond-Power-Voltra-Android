@@ -7,6 +7,7 @@ import com.technogizguy.voltra.controller.http.HttpGatewayState
 import com.technogizguy.voltra.controller.mqtt.MqttPublisherState
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.technogizguy.voltra.controller.model.VoltraControlCommand
 import com.technogizguy.voltra.controller.model.RawVoltraFrame
 import com.technogizguy.voltra.controller.model.VoltraCommandResult
 import com.technogizguy.voltra.controller.model.VoltraConnectionState
@@ -16,6 +17,10 @@ import com.technogizguy.voltra.controller.model.VoltraScanResult
 import com.technogizguy.voltra.controller.model.VoltraSessionState
 import com.technogizguy.voltra.controller.model.Weight
 import com.technogizguy.voltra.controller.model.WeightUnit
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -51,6 +56,16 @@ class VoltraViewModel(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = LocalPreferences(),
     )
+    val weightPresets: StateFlow<List<WeightPreset>> = preferencesRepository.weightPresets.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = emptyList(),
+    )
+    val workoutHistory: StateFlow<List<WorkoutHistoryEntry>> = preferencesRepository.workoutHistory.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = emptyList(),
+    )
 
     private val mutableScanResults = MutableStateFlow<List<VoltraScanResult>>(emptyList())
     val scanResults: StateFlow<List<VoltraScanResult>> = mutableScanResults
@@ -60,6 +75,13 @@ class VoltraViewModel(
 
     private val mutableSelectedControlMode = MutableStateFlow(ControlModeUi.WEIGHT_TRAINING)
     val selectedControlMode: StateFlow<ControlModeUi> = mutableSelectedControlMode
+    private var activeWorkoutDraft: ActiveWorkoutDraft? = null
+
+    init {
+        viewModelScope.launch {
+            state.collect(::trackWorkoutHistory)
+        }
+    }
 
     fun startScan() {
         scanJob?.cancel()
@@ -119,12 +141,14 @@ class VoltraViewModel(
 
     fun setTargetLoad(value: Double) {
         val unit = preferences.value.unit
+        beginWorkoutSessionFor(mutableSelectedControlMode.value)
         viewModelScope.launch {
             client.setTargetLoad(Weight(value = value, unit = unit))
         }
     }
 
     fun setAssistMode(enabled: Boolean) {
+        beginWorkoutSessionFor(ControlModeUi.WEIGHT_TRAINING)
         viewModelScope.launch {
             client.setAssistMode(enabled)
         }
@@ -132,6 +156,7 @@ class VoltraViewModel(
 
     fun setChainsWeight(value: Double) {
         val unit = preferences.value.unit
+        beginWorkoutSessionFor(ControlModeUi.WEIGHT_TRAINING)
         viewModelScope.launch {
             client.setChainsWeight(Weight(value = value, unit = unit))
         }
@@ -139,60 +164,70 @@ class VoltraViewModel(
 
     fun setEccentricWeight(value: Double) {
         val unit = preferences.value.unit
+        beginWorkoutSessionFor(ControlModeUi.WEIGHT_TRAINING)
         viewModelScope.launch {
             client.setEccentricWeight(Weight(value = value, unit = unit))
         }
     }
 
     fun setInverseChainsEnabled(enabled: Boolean) {
+        beginWorkoutSessionFor(ControlModeUi.WEIGHT_TRAINING)
         viewModelScope.launch {
             client.setInverseChainsEnabled(enabled)
         }
     }
 
     fun setResistanceExperience(intense: Boolean) {
+        beginWorkoutSessionFor(mutableSelectedControlMode.value)
         viewModelScope.launch {
             client.setResistanceExperience(intense)
         }
     }
 
     fun setResistanceBandInverse(enabled: Boolean) {
+        beginWorkoutSessionFor(ControlModeUi.RESISTANCE_BAND)
         viewModelScope.launch {
             client.setResistanceBandInverse(enabled)
         }
     }
 
     fun setResistanceBandCurveLogarithm(enabled: Boolean) {
+        beginWorkoutSessionFor(ControlModeUi.RESISTANCE_BAND)
         viewModelScope.launch {
             client.setResistanceBandCurveAlgorithm(enabled)
         }
     }
 
     fun enterResistanceBandMode() {
+        beginWorkoutSessionFor(ControlModeUi.RESISTANCE_BAND)
         viewModelScope.launch {
             client.enterResistanceBandMode()
         }
     }
 
     fun enterDamperMode() {
+        beginWorkoutSessionFor(ControlModeUi.DAMPER)
         viewModelScope.launch {
             client.enterDamperMode()
         }
     }
 
     fun enterIsokineticMode() {
+        beginWorkoutSessionFor(ControlModeUi.ISOKINETIC)
         viewModelScope.launch {
             client.enterIsokineticMode()
         }
     }
 
     fun enterIsometricMode() {
+        beginWorkoutSessionFor(ControlModeUi.ISOMETRIC_TEST)
         viewModelScope.launch {
             client.enterIsometricMode()
         }
     }
 
     fun setDamperLevel(level: Int) {
+        beginWorkoutSessionFor(ControlModeUi.DAMPER)
         viewModelScope.launch {
             client.setDamperLevel(level)
         }
@@ -200,36 +235,42 @@ class VoltraViewModel(
 
     fun setResistanceBandMaxForce(value: Double) {
         val unit = preferences.value.unit
+        beginWorkoutSessionFor(ControlModeUi.RESISTANCE_BAND)
         viewModelScope.launch {
             client.setResistanceBandMaxForce(Weight(value = value, unit = unit))
         }
     }
 
     fun setResistanceBandByRangeOfMotion(enabled: Boolean) {
+        beginWorkoutSessionFor(ControlModeUi.RESISTANCE_BAND)
         viewModelScope.launch {
             client.setResistanceBandByRangeOfMotion(enabled)
         }
     }
 
     fun setResistanceBandLengthInches(valueInches: Double) {
+        beginWorkoutSessionFor(ControlModeUi.RESISTANCE_BAND)
         viewModelScope.launch {
             client.setResistanceBandLengthCm((valueInches * 2.54).roundToInt())
         }
     }
 
     fun setIsokineticMenu(mode: Int) {
+        beginWorkoutSessionFor(ControlModeUi.ISOKINETIC)
         viewModelScope.launch {
             client.setIsokineticMenu(mode)
         }
     }
 
     fun setIsokineticTargetSpeedMmS(speedMmS: Int) {
+        beginWorkoutSessionFor(ControlModeUi.ISOKINETIC)
         viewModelScope.launch {
             client.setIsokineticTargetSpeedMmS(speedMmS)
         }
     }
 
     fun setIsokineticSpeedLimitMmS(speedMmS: Int) {
+        beginWorkoutSessionFor(ControlModeUi.ISOKINETIC)
         viewModelScope.launch {
             client.setIsokineticSpeedLimitMmS(speedMmS)
         }
@@ -237,6 +278,7 @@ class VoltraViewModel(
 
     fun setIsokineticConstantResistance(value: Double) {
         val unit = preferences.value.unit
+        beginWorkoutSessionFor(ControlModeUi.ISOKINETIC)
         viewModelScope.launch {
             client.setIsokineticConstantResistance(Weight(value = value, unit = unit))
         }
@@ -244,12 +286,14 @@ class VoltraViewModel(
 
     fun setIsokineticMaxEccentricLoad(value: Double) {
         val unit = preferences.value.unit
+        beginWorkoutSessionFor(ControlModeUi.ISOKINETIC)
         viewModelScope.launch {
             client.setIsokineticMaxEccentricLoad(Weight(value = value, unit = unit))
         }
     }
 
     fun loadResistanceBand() {
+        beginWorkoutSessionFor(ControlModeUi.RESISTANCE_BAND)
         viewModelScope.launch {
             client.loadResistanceBand()
         }
@@ -264,6 +308,27 @@ class VoltraViewModel(
     fun setCableOffsetCm(offsetCm: Int) {
         viewModelScope.launch {
             client.setCableOffsetCm(offsetCm)
+        }
+    }
+
+    fun setDeviceName(name: String) {
+        viewModelScope.launch {
+            val trimmed = name.trim()
+            val result = client.setDeviceName(trimmed)
+            if (result.status != com.technogizguy.voltra.controller.model.VoltraCommandStatus.BLOCKED &&
+                result.status != com.technogizguy.voltra.controller.model.VoltraCommandStatus.FAILED
+            ) {
+                val currentDeviceId = state.value.currentDevice?.id ?: preferences.value.lastDeviceId
+                if (currentDeviceId != null) {
+                    preferencesRepository.rememberDevice(currentDeviceId, trimmed)
+                }
+            }
+        }
+    }
+
+    fun uploadStartupImage(jpegBytes: ByteArray) {
+        viewModelScope.launch {
+            client.uploadStartupImage(jpegBytes)
         }
     }
 
@@ -339,12 +404,14 @@ class VoltraViewModel(
     }
 
     fun setStrengthMode() {
+        beginWorkoutSessionFor(ControlModeUi.WEIGHT_TRAINING)
         viewModelScope.launch {
             client.setStrengthMode()
         }
     }
 
     fun load() {
+        beginWorkoutSessionFor(mutableSelectedControlMode.value)
         viewModelScope.launch {
             client.load()
         }
@@ -357,8 +424,64 @@ class VoltraViewModel(
     }
 
     fun exitWorkout() {
+        finalizeActiveWorkoutIfNeeded(state.value)
         viewModelScope.launch {
             client.exitWorkout()
+        }
+    }
+
+    fun saveWeightPreset(name: String, scope: WeightPresetScope, value: Double) {
+        val unit = preferences.value.unit
+        viewModelScope.launch {
+            preferencesRepository.upsertWeightPreset(
+                name = name,
+                scope = scope,
+                value = value,
+                unit = unit,
+            )
+        }
+    }
+
+    fun deleteWeightPreset(id: String) {
+        viewModelScope.launch {
+            preferencesRepository.deleteWeightPreset(id)
+        }
+    }
+
+    fun applyWeightPreset(preset: WeightPreset) {
+        val targetUnit = preferences.value.unit
+        val converted = Weight(preset.value, preset.unit).toUnit(targetUnit).cappedForV1()
+        when (preset.scope) {
+            WeightPresetScope.WEIGHT_TRAINING -> {
+                beginWorkoutSessionFor(ControlModeUi.WEIGHT_TRAINING)
+                viewModelScope.launch {
+                    client.setTargetLoad(converted)
+                }
+            }
+            WeightPresetScope.RESISTANCE_BAND -> {
+                beginWorkoutSessionFor(ControlModeUi.RESISTANCE_BAND)
+                viewModelScope.launch {
+                    client.setResistanceBandMaxForce(converted)
+                }
+            }
+        }
+    }
+
+    fun shareWorkoutHistoryCsv(context: Context) {
+        val text = workoutHistoryCsv()
+        context.openFileOutput("voltra-workout-history.csv", Context.MODE_PRIVATE).use { output ->
+            output.write(text.toByteArray())
+        }
+        val intent = Intent(Intent.ACTION_SEND)
+            .setType("text/csv")
+            .putExtra(Intent.EXTRA_SUBJECT, "Voltra workout history")
+            .putExtra(Intent.EXTRA_TEXT, text)
+        context.startActivity(Intent.createChooser(intent, "Share Voltra workout history"))
+    }
+
+    fun clearWorkoutHistory() {
+        viewModelScope.launch {
+            preferencesRepository.clearWorkoutHistory()
         }
     }
 
@@ -468,6 +591,7 @@ class VoltraViewModel(
         appendLine("Isometric max duration: ${reading.isometricMaxDurationSeconds?.let { "$it s" } ?: "unknown"}")
         appendLine("Isometric live force: ${reading.isometricCurrentForceN?.let { "$it N" } ?: "unknown"}")
         appendLine("Isometric peak force: ${reading.isometricPeakForceN?.let { "$it N" } ?: "unknown"}")
+        appendLine("Isometric peak relative force: ${reading.isometricPeakRelativeForcePercent?.let { "$it %" } ?: "unknown"}")
         appendLine("Isometric elapsed: ${reading.isometricElapsedMillis?.let { "$it ms" } ?: "unknown"}")
         appendLine("Set count: ${reading.setCount ?: "unknown"}")
         appendLine("Rep count: ${reading.repCount ?: "unknown"}")
@@ -512,6 +636,174 @@ class VoltraViewModel(
     override fun onCleared() {
         scanJob?.cancel()
         super.onCleared()
+    }
+
+    private fun trackWorkoutHistory(current: VoltraSessionState) {
+        activeWorkoutDraft = activeWorkoutDraft?.updatedWith(current)
+        if (current.connectionState == VoltraConnectionState.DISCONNECTED ||
+            current.connectionState == VoltraConnectionState.FAILED ||
+            current.connectionState == VoltraConnectionState.IDLE
+        ) {
+            finalizeActiveWorkoutIfNeeded(current)
+        }
+    }
+
+    private fun beginWorkoutSessionFor(mode: ControlModeUi) {
+        if (activeWorkoutDraft?.mode == mode) return
+        finalizeActiveWorkoutIfNeeded(state.value)
+        val current = state.value
+        activeWorkoutDraft = ActiveWorkoutDraft(
+            id = UUID.randomUUID().toString(),
+            startedAtMillis = System.currentTimeMillis(),
+            mode = mode,
+            modeLabel = mode.displayLabel(),
+            deviceName = current.currentDevice?.name ?: preferences.value.lastDeviceName,
+            primarySetting = primarySettingSummary(mode, current),
+            batteryStartPercent = current.reading.batteryPercent,
+        ).updatedWith(current)
+    }
+
+    private fun finalizeActiveWorkoutIfNeeded(current: VoltraSessionState) {
+        val draft = activeWorkoutDraft ?: return
+        activeWorkoutDraft = null
+        if (!draft.hasActivity()) return
+        val entry = WorkoutHistoryEntry(
+            id = draft.id,
+            startedAtMillis = draft.startedAtMillis,
+            endedAtMillis = current.reading.lastUpdatedMillis ?: current.lastDisconnectAtMillis ?: System.currentTimeMillis(),
+            deviceName = current.currentDevice?.name ?: draft.deviceName,
+            modeLabel = draft.modeLabel,
+            primarySetting = draft.primarySetting ?: primarySettingSummary(draft.mode, current),
+            reps = draft.reps,
+            sets = draft.sets,
+            peakForceN = draft.peakForceN,
+            batteryStartPercent = draft.batteryStartPercent,
+            batteryEndPercent = current.reading.batteryPercent ?: draft.batteryEndPercent,
+        )
+        viewModelScope.launch {
+            preferencesRepository.appendWorkoutHistory(entry)
+        }
+    }
+
+    private fun workoutHistoryCsv(): String {
+        val history = workoutHistory.value
+        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+        return buildString {
+            appendLine("started_at,ended_at,duration_seconds,device,mode,primary_setting,sets,reps,peak_force_n,battery_start_percent,battery_end_percent")
+            history.forEach { entry ->
+                val durationSeconds = ((entry.endedAtMillis - entry.startedAtMillis).coerceAtLeast(0L) / 1000.0)
+                appendLine(
+                    listOf(
+                        csv(formatter.format(Date(entry.startedAtMillis))),
+                        csv(formatter.format(Date(entry.endedAtMillis))),
+                        csv("%.1f".format(Locale.US, durationSeconds)),
+                        csv(entry.deviceName.orEmpty()),
+                        csv(entry.modeLabel),
+                        csv(entry.primarySetting.orEmpty()),
+                        csv(entry.sets.toString()),
+                        csv(entry.reps.toString()),
+                        csv(entry.peakForceN?.let { "%.1f".format(Locale.US, it) }.orEmpty()),
+                        csv(entry.batteryStartPercent?.toString().orEmpty()),
+                        csv(entry.batteryEndPercent?.toString().orEmpty()),
+                    ).joinToString(","),
+                )
+            }
+        }
+    }
+
+    private fun csv(value: String): String {
+        val escaped = value.replace("\"", "\"\"")
+        return "\"$escaped\""
+    }
+
+    private fun primarySettingSummary(mode: ControlModeUi, current: VoltraSessionState): String? {
+        val reading = current.reading
+        val targetLoad = current.targetLoad.display()
+        return when (mode) {
+            ControlModeUi.WEIGHT_TRAINING -> buildList {
+                add("Weight $targetLoad")
+                reading.chainsWeightLb?.takeIf { it > 0 }?.let { add("Chains ${trimToLabel(it)} lb") }
+                reading.eccentricWeightLb?.takeIf { it != 0.0 }?.let { add("Eccentric ${trimToLabel(it)} lb") }
+            }.joinToString(" | ")
+            ControlModeUi.RESISTANCE_BAND -> buildList {
+                reading.resistanceBandMaxForceLb?.let { add("Band Force ${trimToLabel(it)} lb") }
+                reading.resistanceBandByRangeOfMotion?.let { add(if (it) "ROM" else "Band Length") }
+            }.joinToString(" | ").ifBlank { null }
+            ControlModeUi.DAMPER -> reading.damperLevelIndex?.let { "Damper factor ${damperFactorLabel(it)}" }
+            ControlModeUi.ISOKINETIC -> buildList {
+                reading.isokineticTargetSpeedMmS?.let { add("Target ${it / 1000.0} m/s") }
+                reading.isokineticConstantResistanceLb?.let { add("Const ${trimToLabel(it)} lb") }
+                reading.isokineticMaxEccentricLoadLb?.let { add("Max Ecc ${trimToLabel(it)} lb") }
+            }.joinToString(" | ").ifBlank { null }
+            ControlModeUi.ISOMETRIC_TEST -> buildList {
+                reading.isometricMaxForceLb?.let { add("Force Limit ${trimToLabel(it)} lb") }
+                reading.isometricMaxDurationSeconds?.let { add("Duration ${it}s") }
+            }.joinToString(" | ").ifBlank { null }
+            ControlModeUi.CUSTOM_CURVE -> "Custom Curve"
+        }
+    }
+
+    private fun trimToLabel(value: Double): String {
+        val rounded = kotlin.math.round(value * 10.0) / 10.0
+        return if (rounded % 1.0 == 0.0) rounded.toInt().toString() else rounded.toString()
+    }
+
+    private fun damperFactorLabel(levelIndex: Int): String {
+        return when ((levelIndex + 1).coerceIn(1, 10)) {
+            1 -> "5"
+            2 -> "8"
+            3 -> "11"
+            4 -> "14"
+            5 -> "17"
+            6 -> "21"
+            7 -> "30"
+            8 -> "33"
+            9 -> "41"
+            else -> "50"
+        }
+    }
+
+    private fun ControlModeUi.displayLabel(): String = when (this) {
+        ControlModeUi.WEIGHT_TRAINING -> "Weight Training"
+        ControlModeUi.RESISTANCE_BAND -> "Resistance Band"
+        ControlModeUi.DAMPER -> "Damper"
+        ControlModeUi.ISOKINETIC -> "Isokinetic"
+        ControlModeUi.ISOMETRIC_TEST -> "Isometric Test"
+        ControlModeUi.CUSTOM_CURVE -> "Custom Curve"
+    }
+
+    private data class ActiveWorkoutDraft(
+        val id: String,
+        val startedAtMillis: Long,
+        val mode: ControlModeUi,
+        val modeLabel: String,
+        val deviceName: String?,
+        val primarySetting: String?,
+        val batteryStartPercent: Int?,
+        val batteryEndPercent: Int? = batteryStartPercent,
+        val reps: Int = 0,
+        val sets: Int = 0,
+        val peakForceN: Double? = null,
+    ) {
+        fun updatedWith(current: VoltraSessionState): ActiveWorkoutDraft {
+            val reading = current.reading
+            return copy(
+                deviceName = current.currentDevice?.name ?: deviceName,
+                primarySetting = primarySetting ?: current.reading.workoutMode,
+                batteryEndPercent = reading.batteryPercent ?: batteryEndPercent,
+                reps = maxOf(reps, reading.repCount ?: 0),
+                sets = maxOf(sets, reading.setCount ?: 0),
+                peakForceN = maxNullable(peakForceN, reading.isometricPeakForceN),
+            )
+        }
+
+        fun hasActivity(): Boolean = reps > 0 || sets > 0 || peakForceN != null
+
+        private fun maxNullable(left: Double?, right: Double?): Double? = when {
+            left == null -> right
+            right == null -> left
+            else -> maxOf(left, right)
+        }
     }
 }
 

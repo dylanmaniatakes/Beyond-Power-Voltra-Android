@@ -1,6 +1,9 @@
 package com.technogizguy.voltra.controller.ui
 
 import android.widget.NumberPicker
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -8,6 +11,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -66,8 +71,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -99,15 +106,22 @@ import com.technogizguy.voltra.controller.R
 import com.technogizguy.voltra.controller.AccentColor
 import com.technogizguy.voltra.controller.ControlModeUi
 import com.technogizguy.voltra.controller.HttpGatewayPreferences
+import com.technogizguy.voltra.controller.IsometricForceSample
 import com.technogizguy.voltra.controller.LocalPreferences
 import com.technogizguy.voltra.controller.MqttPreferences
 import com.technogizguy.voltra.controller.RuntimePermissionState
+import com.technogizguy.voltra.controller.prepareStartupImage
 import com.technogizguy.voltra.controller.VoltraViewModel
+import com.technogizguy.voltra.controller.WeightPreset
+import com.technogizguy.voltra.controller.WeightPresetScope
+import com.technogizguy.voltra.controller.WorkoutHistoryEntry
 import com.technogizguy.voltra.controller.WEIGHT_INCREMENT_OPTIONS
+import com.technogizguy.voltra.controller.computeIsometricMetrics
 import com.technogizguy.voltra.controller.http.HttpGatewayConnectionState
 import com.technogizguy.voltra.controller.http.HttpGatewayState
 import com.technogizguy.voltra.controller.mqtt.MqttPublisherConnectionState
 import com.technogizguy.voltra.controller.mqtt.MqttPublisherState
+import com.technogizguy.voltra.controller.model.VoltraControlCommand
 import com.technogizguy.voltra.controller.model.RawVoltraFrame
 import com.technogizguy.voltra.controller.model.VoltraCommandResult
 import com.technogizguy.voltra.controller.model.VoltraConnectionState
@@ -118,9 +132,15 @@ import com.technogizguy.voltra.controller.model.VoltraScanResult
 import com.technogizguy.voltra.controller.model.VoltraSessionState
 import com.technogizguy.voltra.controller.model.WeightUnit
 import com.technogizguy.voltra.controller.protocol.VoltraControlFrames
-import kotlinx.coroutines.delay
-import kotlin.math.roundToInt
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 private fun voltraColorScheme(
     primary: Color,
@@ -258,7 +278,7 @@ private fun convertWeightValue(value: Double, from: WeightUnit, to: WeightUnit):
 }
 
 private fun formatElapsedClock(elapsedMillis: Long): String {
-    val totalSeconds = (elapsedMillis / 1000L).coerceAtLeast(0L)
+    val totalSeconds = ((elapsedMillis + 500L) / 1000L).coerceAtLeast(0L)
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L
     return String.format(Locale.US, "%02d:%02d", minutes, seconds)
@@ -410,13 +430,26 @@ private fun isokineticSpeedMmSForOption(speedValue: Double): Int {
 
 private fun formatInchesValue(value: Double): String = "${formatWeightValue(value)} in"
 
+private data class AdaptiveLayoutInfo(
+    val isTablet: Boolean,
+    val isLandscape: Boolean,
+    val useWidePanels: Boolean,
+)
+
 @Composable
 private fun AdaptiveScreenScaffold(
     maxContentWidth: Dp = 1160.dp,
-    content: @Composable (isTablet: Boolean) -> Unit,
+    content: @Composable (layout: AdaptiveLayoutInfo) -> Unit,
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isTablet = maxWidth >= 840.dp
+        val isLandscape = maxWidth > maxHeight
+        val useWidePanels = maxWidth >= 900.dp && isLandscape
+        val layout = AdaptiveLayoutInfo(
+            isTablet = isTablet,
+            isLandscape = isLandscape,
+            useWidePanels = useWidePanels,
+        )
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.TopCenter,
@@ -426,7 +459,7 @@ private fun AdaptiveScreenScaffold(
                     .fillMaxWidth()
                     .widthIn(max = maxContentWidth),
             ) {
-                content(isTablet)
+                content(layout)
             }
         }
     }
@@ -454,6 +487,8 @@ fun VoltraControllerApp(
     val httpGatewayState by viewModel.httpGatewayState.collectAsStateWithLifecycle()
     val scanResults by viewModel.scanResults.collectAsStateWithLifecycle()
     val preferences by viewModel.preferences.collectAsStateWithLifecycle()
+    val weightPresets by viewModel.weightPresets.collectAsStateWithLifecycle()
+    val workoutHistory by viewModel.workoutHistory.collectAsStateWithLifecycle()
     val showAllDevices by viewModel.showAllDevices.collectAsStateWithLifecycle()
     val selectedControlMode by viewModel.selectedControlMode.collectAsStateWithLifecycle()
     val navController = rememberNavController()
@@ -623,6 +658,7 @@ fun VoltraControllerApp(
                     ControlScreen(
                         state = state,
                         preferences = preferences,
+                        weightPresets = weightPresets,
                         selectedMode = selectedControlMode,
                         onEnterWeightTraining = viewModel::setStrengthMode,
                         onEnterDamper = viewModel::enterDamperMode,
@@ -651,6 +687,8 @@ fun VoltraControllerApp(
                         onTriggerCableLength = viewModel::triggerCableLengthMode,
                         onSetUnit = viewModel::setUnit,
                         onSetWeightIncrement = viewModel::setWeightIncrement,
+                        onSaveWeightPreset = viewModel::saveWeightPreset,
+                        onApplyWeightPreset = viewModel::applyWeightPreset,
                         onLoad = viewModel::load,
                         onUnload = viewModel::unload,
                         onReturnHome = {
@@ -676,7 +714,10 @@ fun VoltraControllerApp(
                 }
                 composable(Route.MORE.path) {
                     MoreFeaturesScreen(
+                        state = state,
                         preferences = preferences,
+                        weightPresets = weightPresets,
+                        workoutHistory = workoutHistory,
                         mqttState = mqttState,
                         httpGatewayState = httpGatewayState,
                         onSetAccentColor = viewModel::setAccentColor,
@@ -688,6 +729,11 @@ fun VoltraControllerApp(
                         onSaveHttpGatewaySettings = viewModel::saveHttpGatewaySettings,
                         onRotateHttpGatewayAccessKey = viewModel::rotateHttpGatewayAccessKey,
                         onPublishMqttNow = viewModel::publishMqttNow,
+                        onSetDeviceName = viewModel::setDeviceName,
+                        onUploadStartupImage = viewModel::uploadStartupImage,
+                        onDeleteWeightPreset = viewModel::deleteWeightPreset,
+                        onShareWorkoutHistory = { viewModel.shareWorkoutHistoryCsv(context) },
+                        onClearWorkoutHistory = viewModel::clearWorkoutHistory,
                         onOpenLogs = {
                             navController.navigate(Route.DIAGNOSTICS.path) {
                                 launchSingleTop = true
@@ -817,37 +863,77 @@ private fun HomeScreen(
     onCustomCurve: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
-    AdaptiveScreenScaffold { isTablet ->
-        val sectionSpacing = if (isTablet) 14.dp else 12.dp
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = if (isTablet) screenPadding() else screenPadding(top = 12.dp, bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(sectionSpacing),
-        ) {
-            item {
-                DeviceStatusCard(
-                    state = state,
-                    onDisconnect = onDisconnect,
-                )
+    AdaptiveScreenScaffold { layout ->
+        val sectionSpacing = if (layout.isTablet) 14.dp else 12.dp
+        if (layout.useWidePanels) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(screenPadding()),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column(
+                    modifier = Modifier.weight(0.42f),
+                    verticalArrangement = Arrangement.spacedBy(sectionSpacing),
+                ) {
+                    DeviceStatusCard(
+                        state = state,
+                        onDisconnect = onDisconnect,
+                    )
+                    SectionHeader(
+                        title = "Mode",
+                        subtitle = "Pick the VOLTRA profile you want to drive.",
+                    )
+                }
+                Column(
+                    modifier = Modifier.weight(0.58f),
+                    verticalArrangement = Arrangement.spacedBy(sectionSpacing),
+                ) {
+                    ModeGrid(
+                        controlReady = state.controlCommandsEnabled,
+                        developerModeEnabled = developerModeEnabled,
+                        isWideLayout = true,
+                        onWeightTraining = onWeightTraining,
+                        onResistanceBand = onResistanceBand,
+                        onDamper = onDamper,
+                        onIsokinetic = onIsokinetic,
+                        onIsometric = onIsometric,
+                        onCustomCurve = onCustomCurve,
+                    )
+                }
             }
-            item {
-                SectionHeader(
-                    title = "Mode",
-                    subtitle = "Pick the VOLTRA profile you want to drive.",
-                )
-            }
-            item {
-                ModeGrid(
-                    controlReady = state.controlCommandsEnabled,
-                    developerModeEnabled = developerModeEnabled,
-                    isWideLayout = isTablet,
-                    onWeightTraining = onWeightTraining,
-                    onResistanceBand = onResistanceBand,
-                    onDamper = onDamper,
-                    onIsokinetic = onIsokinetic,
-                    onIsometric = onIsometric,
-                    onCustomCurve = onCustomCurve,
-                )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = if (layout.isTablet) screenPadding() else screenPadding(top = 12.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(sectionSpacing),
+            ) {
+                item {
+                    DeviceStatusCard(
+                        state = state,
+                        onDisconnect = onDisconnect,
+                    )
+                }
+                item {
+                    SectionHeader(
+                        title = "Mode",
+                        subtitle = "Pick the VOLTRA profile you want to drive.",
+                    )
+                }
+                item {
+                    ModeGrid(
+                        controlReady = state.controlCommandsEnabled,
+                        developerModeEnabled = developerModeEnabled,
+                        isWideLayout = layout.isTablet,
+                        onWeightTraining = onWeightTraining,
+                        onResistanceBand = onResistanceBand,
+                        onDamper = onDamper,
+                        onIsokinetic = onIsokinetic,
+                        onIsometric = onIsometric,
+                        onCustomCurve = onCustomCurve,
+                    )
+                }
             }
         }
     }
@@ -857,6 +943,7 @@ private fun HomeScreen(
 private fun ControlScreen(
     state: VoltraSessionState,
     preferences: LocalPreferences,
+    weightPresets: List<WeightPreset>,
     selectedMode: ControlModeUi,
     onEnterWeightTraining: () -> Unit,
     onEnterDamper: () -> Unit,
@@ -885,6 +972,8 @@ private fun ControlScreen(
     onTriggerCableLength: () -> Unit,
     onSetUnit: (WeightUnit) -> Unit,
     onSetWeightIncrement: (Int) -> Unit,
+    onSaveWeightPreset: (String, WeightPresetScope, Double) -> Unit,
+    onApplyWeightPreset: (WeightPreset) -> Unit,
     onLoad: () -> Unit,
     onUnload: () -> Unit,
     onReturnHome: () -> Unit,
@@ -987,6 +1076,7 @@ private fun ControlScreen(
         workoutState = state.safety.workoutState,
     )
     var optimisticIsometricLoaded by remember { mutableStateOf<Boolean?>(null) }
+    var pendingIsometricLoad by remember { mutableStateOf(false) }
     val isLoaded = if (activeProfile == ControlModeUi.ISOMETRIC_TEST) {
         optimisticIsometricLoaded ?: observedIsLoaded
     } else {
@@ -1017,14 +1107,37 @@ private fun ControlScreen(
     } else {
         onSetTarget
     }
+    var suppressIsometricAutoEnterUntilMillis by remember { mutableStateOf(0L) }
     val loadForMode: () -> Unit = if (inResistanceBand) onLoadResistanceBand else onLoad
     val onIsometricLoad: () -> Unit = {
-        optimisticIsometricLoaded = true
-        onLoad()
+        suppressIsometricAutoEnterUntilMillis = 0L
+        val readyToArm =
+            state.controlCommandsEnabled &&
+                state.connectionState == VoltraConnectionState.CONNECTED &&
+                state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
+                state.safety.canLoad
+        if (readyToArm) {
+            pendingIsometricLoad = false
+            optimisticIsometricLoaded = true
+            onLoad()
+        } else {
+            pendingIsometricLoad = true
+            if (state.safety.workoutState != VoltraControlFrames.WORKOUT_STATE_ISOMETRIC) {
+                onEnterIsometric()
+            }
+        }
     }
     val onIsometricUnload: () -> Unit = {
+        pendingIsometricLoad = false
         optimisticIsometricLoaded = false
         onUnload()
+    }
+    val onIsometricExitWorkout: () -> Unit = {
+        pendingIsometricLoad = false
+        optimisticIsometricLoaded = false
+        suppressIsometricAutoEnterUntilMillis =
+            System.currentTimeMillis() + ISOMETRIC_EXIT_REENTRY_GRACE_MILLIS
+        onExitWorkout()
     }
     val observedResistanceExperience = when (state.reading.resistanceExperienceIntense) {
         true -> ResistanceExperienceOption.INTENSE
@@ -1129,6 +1242,7 @@ private fun ControlScreen(
             pendingResistanceCurve = null
             pendingProgressiveLengthMode = null
             optimisticIsometricLoaded = null
+            pendingIsometricLoad = false
         }
     }
 
@@ -1153,8 +1267,34 @@ private fun ControlScreen(
     LaunchedEffect(observedIsLoaded, activeProfile) {
         if (activeProfile != ControlModeUi.ISOMETRIC_TEST) {
             optimisticIsometricLoaded = null
+            pendingIsometricLoad = false
         } else if (optimisticIsometricLoaded != null && optimisticIsometricLoaded == observedIsLoaded) {
             optimisticIsometricLoaded = null
+            if (observedIsLoaded) {
+                pendingIsometricLoad = false
+            }
+        }
+    }
+
+    LaunchedEffect(
+        pendingIsometricLoad,
+        activeProfile,
+        state.connectionState,
+        state.controlCommandsEnabled,
+        state.safety.workoutState,
+        state.safety.canLoad,
+    ) {
+        if (activeProfile != ControlModeUi.ISOMETRIC_TEST) return@LaunchedEffect
+        if (
+            pendingIsometricLoad &&
+            state.connectionState == VoltraConnectionState.CONNECTED &&
+            state.controlCommandsEnabled &&
+            state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
+            state.safety.canLoad
+        ) {
+            pendingIsometricLoad = false
+            optimisticIsometricLoaded = true
+            onLoad()
         }
     }
 
@@ -1273,9 +1413,11 @@ private fun ControlScreen(
             state.connectionState == VoltraConnectionState.CONNECTED &&
             state.controlCommandsEnabled &&
             state.safety.workoutState != VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
+            System.currentTimeMillis() >= suppressIsometricAutoEnterUntilMillis &&
             !isometricLaunchRequested
         ) {
             isometricLaunchRequested = true
+            pendingIsometricLoad = true
             onEnterIsometric()
         } else if (
             selectedMode != ControlModeUi.ISOMETRIC_TEST ||
@@ -1298,7 +1440,9 @@ private fun ControlScreen(
             setTargetForMode(snapped)
         }
     }
-    val mainControlCard: @Composable () -> Unit = {
+    val activePresetScope = if (inResistanceBand) WeightPresetScope.RESISTANCE_BAND else WeightPresetScope.WEIGHT_TRAINING
+    val activePresets = weightPresets.filter { it.scope == activePresetScope }
+    val mainControlCard: @Composable (Boolean) -> Unit = { wideLayout ->
         when (activeProfile) {
             ControlModeUi.WEIGHT_TRAINING,
             ControlModeUi.RESISTANCE_BAND ->
@@ -1353,6 +1497,18 @@ private fun ControlScreen(
                     onCycleWeightIncrement = {
                         onSetWeightIncrement(nextWeightIncrement(preferences.weightIncrement))
                     },
+                    presets = activePresets,
+                    onSavePreset = { name, value ->
+                        onSaveWeightPreset(name, activePresetScope, value)
+                    },
+                    onApplyPreset = { preset ->
+                        val converted = com.technogizguy.voltra.controller.model.Weight(preset.value, preset.unit)
+                            .toUnit(activeUnit)
+                            .cappedForV1()
+                        pendingTarget = snapWeight(converted.value, minLoad, maxLoad, weightStep)
+                        onApplyWeightPreset(preset)
+                    },
+                    wideLayout = wideLayout,
                     onSetUnit = onSetUnit,
                     unitSwitchEnabled = true,
                     onLoad = loadForMode,
@@ -1375,6 +1531,7 @@ private fun ControlScreen(
                     sets = trackedSets,
                     reps = state.reading.repCount,
                     phase = state.reading.repPhase,
+                    wideLayout = wideLayout,
                     onOpenSettings = { showDamperSettings = true },
                     onLevelChange = {
                         val snapped = snapWeight(it, 1.0, 10.0, 1.0)
@@ -1402,6 +1559,7 @@ private fun ControlScreen(
                     sets = trackedSets,
                     reps = state.reading.repCount,
                     phase = state.reading.repPhase,
+                    wideLayout = wideLayout,
                     onSelectTargetSpeedIndex = {
                         val nextIndex = it.coerceIn(1, isokineticSpeedOptions.lastIndex)
                         if (nextIndex != isokineticTargetSpeedIndex) {
@@ -1421,18 +1579,25 @@ private fun ControlScreen(
                     status = activeProfileStatus,
                     currentForceN = state.reading.isometricCurrentForceN,
                     peakForceN = state.reading.isometricPeakForceN,
+                    peakRelativeForcePercent = state.reading.isometricPeakRelativeForcePercent,
                     elapsedMillis = state.reading.isometricElapsedMillis,
+                    waveformSamplesN = state.reading.isometricWaveformSamplesN,
                     maxForceLb = state.reading.isometricMaxForceLb,
                     maxDurationSeconds = state.reading.isometricMaxDurationSeconds,
                     isLoaded = isLoaded,
-                    controlReady = state.controlCommandsEnabled && modeSessionMatched,
+                    controlReady = state.controlCommandsEnabled &&
+                        state.connectionState == VoltraConnectionState.CONNECTED,
                     canLoad = canLoadActiveProfile,
+                    canRequestLoad = state.controlCommandsEnabled &&
+                        state.connectionState == VoltraConnectionState.CONNECTED &&
+                        activeProfile == ControlModeUi.ISOMETRIC_TEST,
                     sets = trackedSets,
                     reps = state.reading.repCount,
                     phase = state.reading.repPhase,
+                    wideLayout = wideLayout,
                     onLoad = onIsometricLoad,
                     onUnload = onIsometricUnload,
-                    onExitWorkout = onExitWorkout,
+                    onExitWorkout = onIsometricExitWorkout,
                 )
             ControlModeUi.CUSTOM_CURVE ->
                 CustomCurveCard(
@@ -1443,13 +1608,13 @@ private fun ControlScreen(
     }
 
     CompositionLocalProvider(LocalControlAccent provides controlAccent) {
-        AdaptiveScreenScaffold {
+        AdaptiveScreenScaffold(maxContentWidth = 1320.dp) { layout ->
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = screenPadding(),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                item { mainControlCard() }
+                item { mainControlCard(layout.useWidePanels) }
             }
         }
     }
@@ -1570,7 +1735,10 @@ private fun ControlScreen(
 
 @Composable
 private fun MoreFeaturesScreen(
+    state: VoltraSessionState,
     preferences: LocalPreferences,
+    weightPresets: List<WeightPreset>,
+    workoutHistory: List<WorkoutHistoryEntry>,
     mqttState: MqttPublisherState,
     httpGatewayState: HttpGatewayState,
     onSetAccentColor: (AccentColor) -> Unit,
@@ -1582,17 +1750,36 @@ private fun MoreFeaturesScreen(
     onSaveHttpGatewaySettings: (HttpGatewayPreferences) -> Unit,
     onRotateHttpGatewayAccessKey: () -> Unit,
     onPublishMqttNow: () -> Unit,
+    onSetDeviceName: (String) -> Unit,
+    onUploadStartupImage: (ByteArray) -> Unit,
+    onDeleteWeightPreset: (String) -> Unit,
+    onShareWorkoutHistory: () -> Unit,
+    onClearWorkoutHistory: () -> Unit,
     onOpenLogs: () -> Unit,
     onShareDiagnostics: () -> Unit,
 ) {
-    AdaptiveScreenScaffold { isTablet ->
+    AdaptiveScreenScaffold { layout ->
         var versionTapCount by remember(preferences.developerModeEnabled) { mutableStateOf(0) }
         val versionLabel = stringResource(id = R.string.app_version_label)
         val leftColumn: @Composable ColumnScope.() -> Unit = {
+            DevicePersonalizationCard(
+                state = state,
+                onSetDeviceName = onSetDeviceName,
+                onUploadStartupImage = onUploadStartupImage,
+            )
             ThemePickerRow(accentColor = preferences.accentColor, onSetAccentColor = onSetAccentColor)
             ControlPreferencesCard(
                 preferences = preferences,
                 onSetInstantWeightApplyDefault = onSetInstantWeightApplyDefault,
+            )
+            WeightPresetLibraryCard(
+                presets = weightPresets,
+                onDeletePreset = onDeleteWeightPreset,
+            )
+            WorkoutHistoryCard(
+                history = workoutHistory,
+                onShareWorkoutHistory = onShareWorkoutHistory,
+                onClearWorkoutHistory = onClearWorkoutHistory,
             )
             DiagnosticsToolsCard(
                 onOpenLogs = onOpenLogs,
@@ -1638,7 +1825,7 @@ private fun MoreFeaturesScreen(
                     subtitle = "Preferences, exports, and advanced features.",
                 )
             }
-            if (isTablet) {
+            if (layout.useWidePanels) {
                 item {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1665,6 +1852,133 @@ private fun MoreFeaturesScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp), content = rightColumn)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DevicePersonalizationCard(
+    state: VoltraSessionState,
+    onSetDeviceName: (String) -> Unit,
+    onUploadStartupImage: (ByteArray) -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val isConnected = state.connectionState == VoltraConnectionState.CONNECTED
+    val currentDeviceName = state.currentDevice?.name.orEmpty()
+    var deviceName by remember(currentDeviceName) { mutableStateOf(currentDeviceName) }
+    var localMessage by remember { mutableStateOf<String?>(null) }
+    val latestPersonalizationCommand = state.commandLog.lastOrNull { command ->
+        command.command == VoltraControlCommand.SET_DEVICE_NAME ||
+            command.command == VoltraControlCommand.UPLOAD_STARTUP_IMAGE
+    }
+    val trimmedName = deviceName.trim()
+    val nameError = remember(trimmedName) {
+        when {
+            trimmedName.isEmpty() -> "Device name must not be blank."
+            trimmedName.length > 20 -> "Device name must be 20 characters or fewer."
+            !trimmedName.first().isLetter() -> "Device name must start with a letter."
+            trimmedName.any { it.code !in 0x20..0x7E || it == ':' || it == '\\' || it == '|' } ->
+                "Use plain ASCII only. :, \\, and | are not allowed."
+            else -> null
+        }
+    }
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        localMessage = "Preparing startup image..."
+        scope.launch {
+            runCatching {
+                val prepared = withContext(Dispatchers.IO) {
+                    prepareStartupImage(context, uri)
+                }
+                onUploadStartupImage(prepared.jpegBytes)
+                prepared
+            }.onSuccess { prepared ->
+                localMessage = "Prepared startup image (${prepared.jpegBytes.size} bytes)."
+            }.onFailure { error ->
+                localMessage = error.message ?: "Could not prepare the selected image."
+            }
+        }
+    }
+
+    MetricCard {
+        Text("Device Personalization", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(
+            "Set the VOLTRA name and upload a startup image from your phone.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+        Text(
+            if (currentDeviceName.isNotBlank()) "Current device name: $currentDeviceName" else "Connect to a VOLTRA to personalize it.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (state.currentDevice != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = deviceName,
+            onValueChange = { deviceName = it.take(20) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Device Name") },
+            supportingText = {
+                Text("1-20 ASCII characters. Start with a letter.")
+            },
+            singleLine = true,
+            enabled = state.currentDevice != null,
+            isError = nameError != null,
+        )
+        nameError?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = {
+                    onSetDeviceName(trimmedName)
+                    localMessage = "Queued device rename to \"$trimmedName\"."
+                },
+                enabled = isConnected && nameError == null && trimmedName.isNotEmpty() && trimmedName != currentDeviceName,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Save Name")
+            }
+            OutlinedButton(
+                onClick = {
+                    photoPicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                    )
+                },
+                enabled = isConnected,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Startup Image")
+            }
+        }
+        Text(
+            "Startup images are center-cropped, resized to 720 x 720, and sent directly to the VOLTRA.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        localMessage?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        latestPersonalizationCommand?.message?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -2023,6 +2337,119 @@ private fun ControlPreferencesCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WeightPresetLibraryCard(
+    presets: List<WeightPreset>,
+    onDeletePreset: (String) -> Unit,
+) {
+    MetricCard {
+        Text("Weight Presets", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(
+            "Presets saved from the control screens appear here. Tap them on-device to apply quickly, or remove old ones here.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (presets.isEmpty()) {
+            Text(
+                "No presets saved yet.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            presets.forEach { preset ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(preset.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "${preset.scope.label} · ${formatWeightValue(preset.value)} ${preset.unit.label}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    OutlinedButton(onClick = { onDeletePreset(preset.id) }) {
+                        Text("Remove")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkoutHistoryCard(
+    history: List<WorkoutHistoryEntry>,
+    onShareWorkoutHistory: () -> Unit,
+    onClearWorkoutHistory: () -> Unit,
+) {
+    val formatter = remember { SimpleDateFormat("MMM d, h:mm a", Locale.US) }
+    MetricCard {
+        Text("Workout History", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(
+            "Local session summaries are saved on-device so you can start building history before the deeper analytics work lands.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = onShareWorkoutHistory,
+                enabled = history.isNotEmpty(),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Share CSV")
+            }
+            OutlinedButton(
+                onClick = onClearWorkoutHistory,
+                enabled = history.isNotEmpty(),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Clear")
+            }
+        }
+        if (history.isEmpty()) {
+            Text(
+                "No completed workouts saved yet.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            history.take(6).forEach { entry ->
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        "${entry.modeLabel} · ${entry.reps} reps · ${entry.sets} sets",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        buildString {
+                            append(formatter.format(Date(entry.startedAtMillis)))
+                            entry.primarySetting?.takeIf { it.isNotBlank() }?.let {
+                                append(" · ")
+                                append(it)
+                            }
+                            entry.peakForceN?.let {
+                                append(" · Peak ")
+                                append("%.1f N".format(Locale.US, it))
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -2600,6 +3027,10 @@ private fun WeightTrainingCard(
     onTargetCommit: (Double) -> Unit,
     onToggleInstantApply: () -> Unit,
     onCycleWeightIncrement: () -> Unit,
+    presets: List<WeightPreset>,
+    onSavePreset: (String, Double) -> Unit,
+    onApplyPreset: (WeightPreset) -> Unit,
+    wideLayout: Boolean,
     onSetUnit: (WeightUnit) -> Unit,
     unitSwitchEnabled: Boolean,
     onLoad: () -> Unit,
@@ -2611,7 +3042,11 @@ private fun WeightTrainingCard(
     val accent = LocalControlAccent.current
     var showWeightDialog by remember { mutableStateOf(false) }
     var dialogInput by remember { mutableStateOf("") }
+    var showSavePresetDialog by remember { mutableStateOf(false) }
+    var presetNameInput by remember { mutableStateOf("") }
     val displayValueLabel = "${formatWeightValue(pendingTarget)} ${unit.label}"
+    val cardPadding = if (wideLayout) 16.dp else 18.dp
+    val sectionSpacing = if (wideLayout) 14.dp else 16.dp
 
     if (showWeightDialog) {
         AlertDialog(
@@ -2643,6 +3078,39 @@ private fun WeightTrainingCard(
         )
     }
 
+    if (showSavePresetDialog) {
+        AlertDialog(
+            onDismissRequest = { showSavePresetDialog = false },
+            title = { Text("Save Preset") },
+            text = {
+                OutlinedTextField(
+                    value = presetNameInput,
+                    onValueChange = { presetNameInput = it.take(24) },
+                    label = { Text("Preset Name") },
+                    supportingText = { Text(displayValueLabel) },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onSavePreset(presetNameInput, pendingTarget)
+                        presetNameInput = ""
+                        showSavePresetDialog = false
+                    },
+                    enabled = presetNameInput.isNotBlank(),
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSavePresetDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.elevatedCardColors(
@@ -2651,35 +3119,137 @@ private fun WeightTrainingCard(
         shape = MaterialTheme.shapes.medium,
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.padding(cardPadding),
+            verticalArrangement = Arrangement.spacedBy(sectionSpacing),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(modeTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text(
-                        status,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+            if (wideLayout) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(modeTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            status,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AssistChip(
+                            onClick = {
+                                presetNameInput = ""
+                                showSavePresetDialog = true
+                            },
+                            enabled = controlReady,
+                            label = { Text("Save Preset") },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                labelColor = accent.accent,
+                            ),
+                        )
+                        AssistChip(
+                            onClick = onOpenSettings,
+                            enabled = controlReady,
+                            label = { Text(settingsLabel) },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = accent.accentContainer,
+                                labelColor = accent.onAccentContainer,
+                                disabledContainerColor = accent.accentContainer.copy(alpha = 0.45f),
+                                disabledLabelColor = accent.onAccentContainer.copy(alpha = 0.7f),
+                            ),
+                        )
+                        AssistChip(
+                            onClick = {
+                                if (isLoaded) {
+                                    onUnload()
+                                } else {
+                                    onLoad()
+                                }
+                            },
+                            enabled = controlReady && (isLoaded || canLoad),
+                            label = { Text(if (isLoaded) "Weight Off" else "Load") },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = accent.accentContainer,
+                                labelColor = accent.onAccentContainer,
+                                disabledContainerColor = accent.accentContainer.copy(alpha = 0.45f),
+                                disabledLabelColor = accent.onAccentContainer.copy(alpha = 0.7f),
+                            ),
+                        )
+                    }
+                }
+                if (presets.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        presets.forEach { preset ->
+                            AssistChip(
+                                onClick = { onApplyPreset(preset) },
+                                label = {
+                                    Text(
+                                        "${preset.name} · ${formatWeightValue(convertWeightValue(preset.value, preset.unit, unit))} ${unit.label}",
+                                    )
+                                },
+                                colors = AssistChipDefaults.assistChipColors(
+                                    containerColor = accent.accentContainer.copy(alpha = 0.88f),
+                                    labelColor = accent.onAccentContainer,
+                                ),
+                            )
+                        }
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(modeTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            status,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    AssistChip(
+                        onClick = {
+                            if (isLoaded) {
+                                onUnload()
+                            } else {
+                                onLoad()
+                            }
+                        },
+                        enabled = controlReady && (isLoaded || canLoad),
+                        label = { Text(if (isLoaded) "Weight Off" else "Load") },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = accent.accentContainer,
+                            labelColor = accent.onAccentContainer,
+                            disabledContainerColor = accent.accentContainer.copy(alpha = 0.45f),
+                            disabledLabelColor = accent.onAccentContainer.copy(alpha = 0.7f),
+                        ),
                     )
                 }
                 AssistChip(
-                    onClick = {
-                        if (isLoaded) {
-                            onUnload()
-                        } else {
-                            onLoad()
-                        }
-                    },
-                    enabled = controlReady && (isLoaded || canLoad),
-                    label = { Text(if (isLoaded) "Weight Off" else "Load") },
+                    onClick = onOpenSettings,
+                    enabled = controlReady,
+                    label = { Text(settingsLabel) },
                     colors = AssistChipDefaults.assistChipColors(
                         containerColor = accent.accentContainer,
                         labelColor = accent.onAccentContainer,
@@ -2687,100 +3257,230 @@ private fun WeightTrainingCard(
                         disabledLabelColor = accent.onAccentContainer.copy(alpha = 0.7f),
                     ),
                 )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AssistChip(
+                        onClick = {
+                            presetNameInput = ""
+                            showSavePresetDialog = true
+                        },
+                        enabled = controlReady,
+                        label = { Text("Save Preset") },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            labelColor = accent.accent,
+                        ),
+                    )
+                    presets.forEach { preset ->
+                        AssistChip(
+                            onClick = { onApplyPreset(preset) },
+                            label = {
+                                Text(
+                                    "${preset.name} · ${formatWeightValue(convertWeightValue(preset.value, preset.unit, unit))} ${unit.label}",
+                                )
+                            },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = accent.accentContainer.copy(alpha = 0.88f),
+                                labelColor = accent.onAccentContainer,
+                            ),
+                        )
+                    }
+                }
             }
-            AssistChip(
-                onClick = onOpenSettings,
-                enabled = controlReady,
-                label = { Text(settingsLabel) },
-                colors = AssistChipDefaults.assistChipColors(
-                    containerColor = accent.accentContainer,
-                    labelColor = accent.onAccentContainer,
-                    disabledContainerColor = accent.accentContainer.copy(alpha = 0.45f),
-                    disabledLabelColor = accent.onAccentContainer.copy(alpha = 0.7f),
-                ),
-            )
-            DigitalWeightDial(
-                label = displayValueLabel,
-                unit = unit,
-                value = pendingTarget,
-                minLoad = minLoad,
-                maxLoad = maxLoad,
-                step = weightStep,
-                instantApply = instantApply,
-                onTargetChange = onTargetChange,
-                onTargetSettled = onTargetSettled,
-                onCycleStep = onCycleWeightIncrement,
-                onOpenDial = {
-                    dialogInput = formatWeightValue(pendingTarget)
-                    showWeightDialog = true
-                },
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                FilterChip(
-                    selected = unit == WeightUnit.LB,
-                    onClick = { onSetUnit(WeightUnit.LB) },
-                    enabled = unitSwitchEnabled,
-                    label = { Text("lb") },
-                )
-                FilterChip(
-                    selected = unit == WeightUnit.KG,
-                    onClick = { onSetUnit(WeightUnit.KG) },
-                    enabled = unitSwitchEnabled,
-                    label = { Text("kg") },
-                )
-                Spacer(Modifier.weight(1f))
-                SetModeButton(
+            if (wideLayout) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1.16f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        DigitalWeightDial(
+                            label = displayValueLabel,
+                            unit = unit,
+                            value = pendingTarget,
+                            minLoad = minLoad,
+                            maxLoad = maxLoad,
+                            step = weightStep,
+                            instantApply = instantApply,
+                            onTargetChange = onTargetChange,
+                            onTargetSettled = onTargetSettled,
+                            onCycleStep = onCycleWeightIncrement,
+                            onOpenDial = {
+                                dialogInput = formatWeightValue(pendingTarget)
+                                showWeightDialog = true
+                            },
+                            denseLayout = true,
+                        )
+                        HoldToLoadButton(
+                            enabled = controlReady && canLoad,
+                            onLoad = onLoad,
+                        )
+                    }
+                    Column(
+                        modifier = Modifier.weight(0.84f),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            FilterChip(
+                                selected = unit == WeightUnit.LB,
+                                onClick = { onSetUnit(WeightUnit.LB) },
+                                enabled = unitSwitchEnabled,
+                                label = { Text("lb") },
+                            )
+                            FilterChip(
+                                selected = unit == WeightUnit.KG,
+                                onClick = { onSetUnit(WeightUnit.KG) },
+                                enabled = unitSwitchEnabled,
+                                label = { Text("kg") },
+                            )
+                            Spacer(Modifier.weight(1f))
+                            SetModeButton(
+                                instantApply = instantApply,
+                                onClick = onSetTarget,
+                                onLongClick = onToggleInstantApply,
+                                enabled = controlReady,
+                            )
+                        }
+                        WorkoutTelemetryStrip(
+                            sets = sets,
+                            reps = reps,
+                            phase = phase,
+                            status = status,
+                            isLoaded = isLoaded,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            OutlinedButton(
+                                onClick = onExitWorkout,
+                                enabled = controlReady,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Exit Mode")
+                            }
+                            FilledTonalButton(
+                                onClick = {
+                                    if (isLoaded) onUnload() else onLoad()
+                                },
+                                enabled = controlReady && (isLoaded || canLoad),
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = accent.accentContainer,
+                                    contentColor = accent.onAccentContainer,
+                                ),
+                            ) {
+                                Text("Unload")
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = onTriggerCableLength,
+                            enabled = cableLengthEnabled,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Cable Length")
+                        }
+                    }
+                }
+            } else {
+                DigitalWeightDial(
+                    label = displayValueLabel,
+                    unit = unit,
+                    value = pendingTarget,
+                    minLoad = minLoad,
+                    maxLoad = maxLoad,
+                    step = weightStep,
                     instantApply = instantApply,
-                    onClick = onSetTarget,
-                    onLongClick = onToggleInstantApply,
-                    enabled = controlReady,
+                    onTargetChange = onTargetChange,
+                    onTargetSettled = onTargetSettled,
+                    onCycleStep = onCycleWeightIncrement,
+                    onOpenDial = {
+                        dialogInput = formatWeightValue(pendingTarget)
+                        showWeightDialog = true
+                    },
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilterChip(
+                        selected = unit == WeightUnit.LB,
+                        onClick = { onSetUnit(WeightUnit.LB) },
+                        enabled = unitSwitchEnabled,
+                        label = { Text("lb") },
+                    )
+                    FilterChip(
+                        selected = unit == WeightUnit.KG,
+                        onClick = { onSetUnit(WeightUnit.KG) },
+                        enabled = unitSwitchEnabled,
+                        label = { Text("kg") },
+                    )
+                    Spacer(Modifier.weight(1f))
+                    SetModeButton(
+                        instantApply = instantApply,
+                        onClick = onSetTarget,
+                        onLongClick = onToggleInstantApply,
+                        enabled = controlReady,
+                    )
+                }
+                WorkoutTelemetryStrip(
+                    sets = sets,
+                    reps = reps,
+                    phase = phase,
+                    status = status,
+                    isLoaded = isLoaded,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onExitWorkout,
+                        enabled = controlReady,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Exit Mode")
+                    }
+                    FilledTonalButton(
+                        onClick = {
+                            if (isLoaded) onUnload() else onLoad()
+                        },
+                        enabled = controlReady && (isLoaded || canLoad),
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = accent.accentContainer,
+                            contentColor = accent.onAccentContainer,
+                        ),
+                    ) {
+                        Text("Unload")
+                    }
+                }
+                OutlinedButton(
+                    onClick = onTriggerCableLength,
+                    enabled = cableLengthEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Cable Length")
+                }
+                HoldToLoadButton(
+                    enabled = controlReady && canLoad,
+                    onLoad = onLoad,
                 )
             }
-            WorkoutTelemetryStrip(
-                sets = sets,
-                reps = reps,
-                phase = phase,
-                status = status,
-                isLoaded = isLoaded,
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedButton(
-                    onClick = onExitWorkout,
-                    enabled = controlReady,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Exit Mode")
-                }
-                FilledTonalButton(
-                    onClick = onUnload,
-                    enabled = controlReady,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = accent.accentContainer,
-                        contentColor = accent.onAccentContainer,
-                    ),
-                ) {
-                    Text("Unload")
-                }
-            }
-            OutlinedButton(
-                onClick = onTriggerCableLength,
-                enabled = cableLengthEnabled,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Cable Length")
-            }
-            HoldToLoadButton(
-                enabled = controlReady && canLoad,
-                onLoad = onLoad,
-            )
         }
     }
 }
@@ -2795,6 +3495,7 @@ private fun DamperModeCard(
     sets: Int?,
     reps: Int?,
     phase: String?,
+    wideLayout: Boolean,
     onOpenSettings: () -> Unit,
     onLevelChange: (Double) -> Unit,
     onLoad: () -> Unit,
@@ -2862,85 +3563,184 @@ private fun DamperModeCard(
                     disabledLabelColor = accent.onAccentContainer.copy(alpha = 0.7f),
                 ),
             )
-            Text(
-                formatDamperFactor(dragLevel),
-                style = MaterialTheme.typography.displayLarge,
-                fontWeight = FontWeight.Bold,
-                color = accent.accent,
-            )
-            Text(
-                "Factor",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                "Level ${dragLevel.roundToInt()}",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Slider(
-                value = dragLevel.toFloat(),
-                onValueChange = {
-                    dragLevel = snapWeight(it.toDouble(), 1.0, 10.0, 1.0)
-                },
-                onValueChangeFinished = {
-                    onLevelChange(dragLevel)
-                },
-                valueRange = 1f..10f,
-                steps = 8,
-                colors = SliderDefaults.colors(
-                    thumbColor = accent.accent,
-                    activeTrackColor = accent.accent,
-                ),
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text("5 factor", style = MaterialTheme.typography.labelMedium)
-                Text("50 factor", style = MaterialTheme.typography.labelMedium)
-            }
-            WorkoutTelemetryStrip(
-                sets = sets,
-                reps = reps,
-                phase = phase,
-                status = status,
-                isLoaded = isLoaded,
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedButton(
-                    onClick = onExitWorkout,
-                    enabled = controlReady,
-                    modifier = Modifier.weight(1f),
+            if (wideLayout) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(18.dp),
+                    verticalAlignment = Alignment.Top,
                 ) {
-                    Text("Exit Mode")
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            formatDamperFactor(dragLevel),
+                            style = MaterialTheme.typography.displayLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = accent.accent,
+                        )
+                        Text(
+                            "Factor",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "Level ${dragLevel.roundToInt()}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Slider(
+                            value = dragLevel.toFloat(),
+                            onValueChange = {
+                                dragLevel = snapWeight(it.toDouble(), 1.0, 10.0, 1.0)
+                            },
+                            onValueChangeFinished = {
+                                onLevelChange(dragLevel)
+                            },
+                            valueRange = 1f..10f,
+                            steps = 8,
+                            colors = SliderDefaults.colors(
+                                thumbColor = accent.accent,
+                                activeTrackColor = accent.accent,
+                            ),
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text("5 factor", style = MaterialTheme.typography.labelMedium)
+                            Text("50 factor", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                    Column(
+                        modifier = Modifier.weight(0.92f),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        WorkoutTelemetryStrip(
+                            sets = sets,
+                            reps = reps,
+                            phase = phase,
+                            status = status,
+                            isLoaded = isLoaded,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            OutlinedButton(
+                                onClick = onExitWorkout,
+                                enabled = controlReady,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Exit Mode")
+                            }
+                            FilledTonalButton(
+                                onClick = onUnload,
+                                enabled = controlReady,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = accent.accentContainer,
+                                    contentColor = accent.onAccentContainer,
+                                ),
+                            ) {
+                                Text("Unload")
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = onTriggerCableLength,
+                            enabled = cableLengthEnabled,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Cable Length")
+                        }
+                        HoldToLoadButton(
+                            enabled = controlReady && canLoad,
+                            onLoad = onLoad,
+                        )
+                    }
                 }
-                FilledTonalButton(
-                    onClick = onUnload,
-                    enabled = controlReady,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = accent.accentContainer,
-                        contentColor = accent.onAccentContainer,
+            } else {
+                Text(
+                    formatDamperFactor(dragLevel),
+                    style = MaterialTheme.typography.displayLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = accent.accent,
+                )
+                Text(
+                    "Factor",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "Level ${dragLevel.roundToInt()}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Slider(
+                    value = dragLevel.toFloat(),
+                    onValueChange = {
+                        dragLevel = snapWeight(it.toDouble(), 1.0, 10.0, 1.0)
+                    },
+                    onValueChangeFinished = {
+                        onLevelChange(dragLevel)
+                    },
+                    valueRange = 1f..10f,
+                    steps = 8,
+                    colors = SliderDefaults.colors(
+                        thumbColor = accent.accent,
+                        activeTrackColor = accent.accent,
                     ),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Text("Unload")
+                    Text("5 factor", style = MaterialTheme.typography.labelMedium)
+                    Text("50 factor", style = MaterialTheme.typography.labelMedium)
                 }
+                WorkoutTelemetryStrip(
+                    sets = sets,
+                    reps = reps,
+                    phase = phase,
+                    status = status,
+                    isLoaded = isLoaded,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onExitWorkout,
+                        enabled = controlReady,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Exit Mode")
+                    }
+                    FilledTonalButton(
+                        onClick = onUnload,
+                        enabled = controlReady,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = accent.accentContainer,
+                            contentColor = accent.onAccentContainer,
+                        ),
+                    ) {
+                        Text("Unload")
+                    }
+                }
+                OutlinedButton(
+                    onClick = onTriggerCableLength,
+                    enabled = cableLengthEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Cable Length")
+                }
+                HoldToLoadButton(
+                    enabled = controlReady && canLoad,
+                    onLoad = onLoad,
+                )
             }
-            OutlinedButton(
-                onClick = onTriggerCableLength,
-                enabled = cableLengthEnabled,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Cable Length")
-            }
-            HoldToLoadButton(
-                enabled = controlReady && canLoad,
-                onLoad = onLoad,
-            )
         }
     }
 }
@@ -2958,6 +3758,7 @@ private fun IsokineticModeCard(
     sets: Int?,
     reps: Int?,
     phase: String?,
+    wideLayout: Boolean,
     onSelectTargetSpeedIndex: (Int) -> Unit,
     onLoad: () -> Unit,
     onUnload: () -> Unit,
@@ -3033,99 +3834,212 @@ private fun IsokineticModeCard(
                     disabledLabelColor = accent.onAccentContainer.copy(alpha = 0.7f),
                 ),
             )
-            Text(
-                formatSpeedOptionLabel(displayedSpeedValue),
-                style = MaterialTheme.typography.displayLarge,
-                fontWeight = FontWeight.Bold,
-                color = accent.accent,
-            )
-            Text(
-                "m/s",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Slider(
-                value = sliderSpeedIndex,
-                onValueChange = {
-                    isDraggingSpeed = true
-                    sliderSpeedIndex = it
-                },
-                onValueChangeFinished = {
-                    val nextIndex = sliderSpeedIndex
-                        .roundToInt()
-                        .coerceIn(1, speedOptions.lastIndex)
-                    sliderSpeedIndex = nextIndex.toFloat()
-                    isDraggingSpeed = false
-                    if (nextIndex != targetSpeedIndex) {
-                        onSelectTargetSpeedIndex(nextIndex)
+            if (wideLayout) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(18.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1.02f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(
+                            formatSpeedOptionLabel(displayedSpeedValue),
+                            style = MaterialTheme.typography.displayLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = accent.accent,
+                        )
+                        Text(
+                            "m/s",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Slider(
+                            value = sliderSpeedIndex,
+                            onValueChange = {
+                                isDraggingSpeed = true
+                                sliderSpeedIndex = it
+                            },
+                            onValueChangeFinished = {
+                                val nextIndex = sliderSpeedIndex
+                                    .roundToInt()
+                                    .coerceIn(1, speedOptions.lastIndex)
+                                sliderSpeedIndex = nextIndex.toFloat()
+                                isDraggingSpeed = false
+                                if (nextIndex != targetSpeedIndex) {
+                                    onSelectTargetSpeedIndex(nextIndex)
+                                }
+                            },
+                            valueRange = 1f..speedOptions.lastIndex.toFloat(),
+                            steps = (speedOptions.lastIndex - 2).coerceAtLeast(0),
+                            enabled = controlReady,
+                            colors = SliderDefaults.colors(
+                                thumbColor = accent.accent,
+                                activeTrackColor = accent.accent,
+                            ),
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text("0.1", style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                formatSpeedOptionLabel(displayedSpeedValue),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text("2.0", style = MaterialTheme.typography.labelMedium)
+                        }
+                        Text(
+                            "Eccentric settings: ${formatWeightValue(maxEccentricLoad)} lb max load, ${formatWeightValue(constantResistance)} lb constant resistance",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                },
-                valueRange = 1f..speedOptions.lastIndex.toFloat(),
-                steps = (speedOptions.lastIndex - 2).coerceAtLeast(0),
-                enabled = controlReady,
-                colors = SliderDefaults.colors(
-                    thumbColor = accent.accent,
-                    activeTrackColor = accent.accent,
-                ),
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text("0.1", style = MaterialTheme.typography.labelMedium)
+                    Column(
+                        modifier = Modifier.weight(0.98f),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        WorkoutTelemetryStrip(
+                            sets = sets,
+                            reps = reps,
+                            phase = phase,
+                            status = status,
+                            isLoaded = isLoaded,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            OutlinedButton(
+                                onClick = onExitWorkout,
+                                enabled = controlReady,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Exit Mode")
+                            }
+                            FilledTonalButton(
+                                onClick = onUnload,
+                                enabled = controlReady,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = accent.accentContainer,
+                                    contentColor = accent.onAccentContainer,
+                                ),
+                            ) {
+                                Text("Unload")
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = onTriggerCableLength,
+                            enabled = cableLengthEnabled,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Cable Length")
+                        }
+                        HoldToLoadButton(
+                            enabled = controlReady && canLoad,
+                            onLoad = onLoad,
+                        )
+                    }
+                }
+            } else {
                 Text(
                     formatSpeedOptionLabel(displayedSpeedValue),
-                    style = MaterialTheme.typography.labelLarge,
+                    style = MaterialTheme.typography.displayLarge,
                     fontWeight = FontWeight.Bold,
+                    color = accent.accent,
                 )
-                Text("2.0", style = MaterialTheme.typography.labelMedium)
-            }
-            Text(
-                "Eccentric settings: ${formatWeightValue(maxEccentricLoad)} lb max load, ${formatWeightValue(constantResistance)} lb constant resistance",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            WorkoutTelemetryStrip(
-                sets = sets,
-                reps = reps,
-                phase = phase,
-                status = status,
-                isLoaded = isLoaded,
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedButton(
-                    onClick = onExitWorkout,
+                Text(
+                    "m/s",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Slider(
+                    value = sliderSpeedIndex,
+                    onValueChange = {
+                        isDraggingSpeed = true
+                        sliderSpeedIndex = it
+                    },
+                    onValueChangeFinished = {
+                        val nextIndex = sliderSpeedIndex
+                            .roundToInt()
+                            .coerceIn(1, speedOptions.lastIndex)
+                        sliderSpeedIndex = nextIndex.toFloat()
+                        isDraggingSpeed = false
+                        if (nextIndex != targetSpeedIndex) {
+                            onSelectTargetSpeedIndex(nextIndex)
+                        }
+                    },
+                    valueRange = 1f..speedOptions.lastIndex.toFloat(),
+                    steps = (speedOptions.lastIndex - 2).coerceAtLeast(0),
                     enabled = controlReady,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Exit Mode")
-                }
-                FilledTonalButton(
-                    onClick = onUnload,
-                    enabled = controlReady,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = accent.accentContainer,
-                        contentColor = accent.onAccentContainer,
+                    colors = SliderDefaults.colors(
+                        thumbColor = accent.accent,
+                        activeTrackColor = accent.accent,
                     ),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Text("Unload")
+                    Text("0.1", style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        formatSpeedOptionLabel(displayedSpeedValue),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text("2.0", style = MaterialTheme.typography.labelMedium)
                 }
+                Text(
+                    "Eccentric settings: ${formatWeightValue(maxEccentricLoad)} lb max load, ${formatWeightValue(constantResistance)} lb constant resistance",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                WorkoutTelemetryStrip(
+                    sets = sets,
+                    reps = reps,
+                    phase = phase,
+                    status = status,
+                    isLoaded = isLoaded,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onExitWorkout,
+                        enabled = controlReady,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Exit Mode")
+                    }
+                    FilledTonalButton(
+                        onClick = onUnload,
+                        enabled = controlReady,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = accent.accentContainer,
+                            contentColor = accent.onAccentContainer,
+                        ),
+                    ) {
+                        Text("Unload")
+                    }
+                }
+                OutlinedButton(
+                    onClick = onTriggerCableLength,
+                    enabled = cableLengthEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Cable Length")
+                }
+                HoldToLoadButton(
+                    enabled = controlReady && canLoad,
+                    onLoad = onLoad,
+                )
             }
-            OutlinedButton(
-                onClick = onTriggerCableLength,
-                enabled = cableLengthEnabled,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Cable Length")
-            }
-            HoldToLoadButton(
-                enabled = controlReady && canLoad,
-                onLoad = onLoad,
-            )
         }
     }
 }
@@ -3135,20 +4049,136 @@ private fun IsometricTestCard(
     status: String,
     currentForceN: Double?,
     peakForceN: Double?,
+    peakRelativeForcePercent: Double?,
     elapsedMillis: Long?,
+    waveformSamplesN: List<Double>,
     maxForceLb: Double?,
     maxDurationSeconds: Int?,
     isLoaded: Boolean,
     controlReady: Boolean,
     canLoad: Boolean,
+    canRequestLoad: Boolean,
     sets: Int?,
     reps: Int?,
     phase: String?,
+    wideLayout: Boolean,
     onLoad: () -> Unit,
     onUnload: () -> Unit,
     onExitWorkout: () -> Unit,
 ) {
     val accent = LocalControlAccent.current
+    val samples = remember { mutableStateListOf<IsometricForceSample>() }
+    var previouslyLoaded by remember { mutableStateOf(isLoaded) }
+
+    LaunchedEffect(isLoaded) {
+        if (isLoaded && !previouslyLoaded) {
+            samples.clear()
+        }
+        previouslyLoaded = isLoaded
+    }
+
+    LaunchedEffect(waveformSamplesN, elapsedMillis, isLoaded, currentForceN) {
+        if (waveformSamplesN.isEmpty()) {
+            if (!isLoaded || currentForceN == null || elapsedMillis == null) {
+                samples.clear()
+            }
+            return@LaunchedEffect
+        }
+        val effectiveDurationMillis = elapsedMillis?.takeIf { it > 0L }
+        val stepMillis = when {
+            waveformSamplesN.size > 1 && effectiveDurationMillis != null ->
+                effectiveDurationMillis.toDouble() / (waveformSamplesN.size - 1).toDouble()
+
+            else -> 4.0
+        }
+        samples.clear()
+        waveformSamplesN.forEachIndexed { index, forceN ->
+            samples += IsometricForceSample(
+                elapsedMillis = (index * stepMillis).roundToLong(),
+                forceN = forceN.coerceAtLeast(0.0),
+            )
+        }
+    }
+
+    LaunchedEffect(currentForceN, elapsedMillis, isLoaded) {
+        if (!isLoaded || currentForceN == null || elapsedMillis == null) return@LaunchedEffect
+        val nextSample = IsometricForceSample(
+            elapsedMillis = elapsedMillis,
+            forceN = currentForceN.coerceAtLeast(0.0),
+        )
+        when {
+            samples.isEmpty() -> samples += nextSample
+            nextSample.elapsedMillis < samples.last().elapsedMillis -> {
+                samples.clear()
+                samples += nextSample
+            }
+
+            nextSample.elapsedMillis == samples.last().elapsedMillis -> {
+                samples[samples.lastIndex] = nextSample
+            }
+
+            else -> {
+                samples += nextSample
+                if (samples.size > 240) {
+                    repeat(samples.size - 240) { samples.removeAt(0) }
+                }
+            }
+        }
+    }
+
+    val computedMetrics = computeIsometricMetrics(samples)
+    val hasTraceMetrics = samples.size >= 2
+    val averageSampleStepMillis = if (samples.size > 1) {
+        samples.zipWithNext { previous, next ->
+            (next.elapsedMillis - previous.elapsedMillis).coerceAtLeast(0L)
+        }.average()
+    } else {
+        null
+    }
+    val hasDenseWaveform = averageSampleStepMillis != null && averageSampleStepMillis <= 25.0
+    val hasWaveformTrace = samples.isNotEmpty()
+    val preferCompletedSummary =
+        currentForceN == null &&
+            peakRelativeForcePercent != null &&
+            peakForceN != null &&
+            elapsedMillis != null &&
+            !hasTraceMetrics
+    val displayedCurrentForce = when {
+        isLoaded && hasTraceMetrics -> computedMetrics.currentForceN ?: currentForceN
+        isLoaded -> currentForceN
+        else -> null
+    }
+    val displayedPeakForce = when {
+        preferCompletedSummary -> peakForceN
+        hasTraceMetrics -> computedMetrics.peakForceN ?: peakForceN
+        hasWaveformTrace -> computedMetrics.peakForceN ?: peakForceN
+        else -> peakForceN ?: computedMetrics.peakForceN
+    }
+    val displayedElapsedMillis = when {
+        preferCompletedSummary -> elapsedMillis
+        hasTraceMetrics -> computedMetrics.durationMillis ?: elapsedMillis
+        hasWaveformTrace -> computedMetrics.durationMillis ?: elapsedMillis
+        isLoaded -> elapsedMillis ?: computedMetrics.durationMillis
+        else -> computedMetrics.durationMillis
+    }
+    val displayedPeakRelativeForce = peakRelativeForcePercent?.takeIf { currentForceN == null }
+    val leadingMetricTitle = if (displayedPeakRelativeForce != null) "Peak Relative Force" else "Current Force"
+    val leadingMetricValue = if (displayedPeakRelativeForce != null) {
+        "${formatPercentage(displayedPeakRelativeForce)}%"
+    } else {
+        displayedCurrentForce?.roundToInt()?.let { "$it N" } ?: "--"
+    }
+    val hasCompletedSummary = samples.isNotEmpty() ||
+        displayedPeakForce != null ||
+        displayedElapsedMillis != null ||
+        displayedPeakRelativeForce != null
+    val helperStatus = when {
+        isLoaded -> "Pull against the VOLTRA to capture live force."
+        hasCompletedSummary -> "Last completed test is shown below. Load again to start a new attempt."
+        canLoad || canRequestLoad -> "The VOLTRA is already in Isometric ready. Pull to start, or tap Refresh if the live stream misses."
+        else -> "Waiting for the VOLTRA to enter Isometric ready."
+    }
+
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.elevatedCardColors(
@@ -3167,7 +4197,7 @@ private fun IsometricTestCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Isometric Test", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Isometric", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
                         status,
                         style = MaterialTheme.typography.labelMedium,
@@ -3180,8 +4210,12 @@ private fun IsometricTestCard(
                     onClick = {
                         if (isLoaded) onUnload() else onLoad()
                     },
-                    enabled = controlReady && (isLoaded || canLoad),
-                    label = { Text(if (isLoaded) "Weight Off" else "Load") },
+                    enabled = if (isLoaded) {
+                        controlReady
+                    } else {
+                        controlReady && (canLoad || canRequestLoad)
+                    },
+                    label = { Text(if (isLoaded) "Weight Off" else "Refresh") },
                     colors = AssistChipDefaults.assistChipColors(
                         containerColor = accent.accentContainer,
                         labelColor = accent.onAccentContainer,
@@ -3190,32 +4224,263 @@ private fun IsometricTestCard(
                     ),
                 )
             }
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+            if (wideLayout) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(18.dp),
+                    verticalAlignment = Alignment.Top,
                 ) {
-                    RepStat("Live Force", currentForceN?.roundToInt()?.let { "$it N" } ?: "--", Modifier.weight(1f))
-                    RepStat("Peak Force", peakForceN?.roundToInt()?.let { "$it N" } ?: "--", Modifier.weight(1f))
+                    Column(
+                        modifier = Modifier.weight(1.08f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("Realtime Data", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                IsometricRealtimeChart(
+                                    samples = samples,
+                                    maxForceN = computedMetrics.graphMaxForceN,
+                                    accentColor = accent.accent,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(280.dp),
+                                )
+                            }
+                        }
+                    }
+                    Column(
+                        modifier = Modifier.weight(0.92f),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    IsometricMetricCell(
+                                        title = leadingMetricTitle,
+                                        value = leadingMetricValue,
+                                        valueColor = accent.accent,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    IsometricMetricCell(
+                                        title = "Time",
+                                        value = displayedElapsedMillis?.let(::formatElapsedClock) ?: "--:--",
+                                        valueColor = Color(0xFFFFE45C),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    IsometricMetricCell(
+                                        title = "Peak Force",
+                                        value = displayedPeakForce?.roundToInt()?.let { "$it N" } ?: "--",
+                                        valueColor = accent.accent,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    IsometricMetricCell(
+                                        title = "RFD 0-100ms",
+                                        value = if (hasDenseWaveform) {
+                                            computedMetrics.rfd100Ns?.let(::formatTwoDecimals)?.let { "$it N/s" }
+                                        } else {
+                                            null
+                                        } ?: "--",
+                                        valueColor = Color(0xFF8EE86D),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    IsometricMetricCell(
+                                        title = "Time To Peak",
+                                        value = if (hasDenseWaveform) {
+                                            computedMetrics.timeToPeakMillis?.let(::formatSecondsClock)
+                                        } else {
+                                            null
+                                        } ?: "--",
+                                        valueColor = Color(0xFF67A9FF),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    IsometricMetricCell(
+                                        title = "Impulse 0-100ms",
+                                        value = if (hasDenseWaveform) {
+                                            computedMetrics.impulse100Ns?.let(::formatTwoDecimals)?.let { "$it N*s" }
+                                        } else {
+                                            null
+                                        } ?: "--",
+                                        valueColor = Color(0xFFFF5C8A),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                                Text(
+                                    buildList {
+                                        maxForceLb?.roundToInt()?.let { add("Force limit $it lb") }
+                                        maxDurationSeconds?.let { add("Timer limit ${it}s") }
+                                        add(helperStatus)
+                                    }.joinToString(" • "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            OutlinedButton(
+                                onClick = onExitWorkout,
+                                enabled = controlReady,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Exit Mode")
+                            }
+                            FilledTonalButton(
+                                onClick = {
+                                    if (isLoaded) onUnload() else onLoad()
+                                },
+                                enabled = if (isLoaded) {
+                                    controlReady
+                                } else {
+                                    controlReady && (canLoad || canRequestLoad)
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = accent.accentContainer,
+                                    contentColor = accent.onAccentContainer,
+                                ),
+                            ) {
+                                Text(if (isLoaded) "Finish" else "Refresh")
+                            }
+                        }
+                        WorkoutTelemetryStrip(
+                            sets = sets,
+                            reps = reps,
+                            phase = phase,
+                            status = helperStatus,
+                            isLoaded = isLoaded,
+                        )
+                    }
                 }
-                Row(
+            } else {
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    RepStat("Force Limit", maxForceLb?.roundToInt()?.let { "$it lb" } ?: "--", Modifier.weight(1f))
-                    RepStat("Time", elapsedMillis?.let(::formatElapsedClock) ?: "--:--", Modifier.weight(1f))
+                    Text("Realtime Data", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            IsometricRealtimeChart(
+                                samples = samples,
+                                maxForceN = computedMetrics.graphMaxForceN,
+                                accentColor = accent.accent,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(220.dp),
+                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                IsometricMetricCell(
+                                    title = leadingMetricTitle,
+                                    value = leadingMetricValue,
+                                    valueColor = accent.accent,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IsometricMetricCell(
+                                    title = "Time",
+                                    value = displayedElapsedMillis?.let(::formatElapsedClock) ?: "--:--",
+                                    valueColor = Color(0xFFFFE45C),
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                IsometricMetricCell(
+                                    title = "Peak Force",
+                                    value = displayedPeakForce?.roundToInt()?.let { "$it N" } ?: "--",
+                                    valueColor = accent.accent,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IsometricMetricCell(
+                                    title = "RFD 0-100ms",
+                        value = if (hasDenseWaveform) {
+                            computedMetrics.rfd100Ns?.let(::formatTwoDecimals)?.let { "$it N/s" }
+                        } else {
+                            null
+                        } ?: "--",
+                                    valueColor = Color(0xFF8EE86D),
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                IsometricMetricCell(
+                                    title = "Time To Peak",
+                        value = if (hasDenseWaveform) {
+                            computedMetrics.timeToPeakMillis?.let(::formatSecondsClock)
+                        } else {
+                            null
+                        } ?: "--",
+                                    valueColor = Color(0xFF67A9FF),
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IsometricMetricCell(
+                                    title = "Impulse 0-100ms",
+                        value = if (hasDenseWaveform) {
+                            computedMetrics.impulse100Ns?.let(::formatTwoDecimals)?.let { "$it N*s" }
+                        } else {
+                            null
+                        } ?: "--",
+                                    valueColor = Color(0xFFFF5C8A),
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        buildList {
+                            maxForceLb?.roundToInt()?.let { add("Force limit $it lb") }
+                            maxDurationSeconds?.let { add("Timer limit ${it}s") }
+                            add(helperStatus)
+                        }.joinToString(" • "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
-            WorkoutTelemetryStrip(
-                sets = sets,
-                reps = reps,
-                phase = phase,
-                status = maxDurationSeconds?.let { "Timer limit $it s." } ?: "Live from the VOLTRA.",
-                isLoaded = isLoaded,
-            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -3228,24 +4493,155 @@ private fun IsometricTestCard(
                     Text("Exit Mode")
                 }
                 FilledTonalButton(
-                    onClick = onUnload,
-                    enabled = controlReady,
+                    onClick = {
+                        if (isLoaded) onUnload() else onLoad()
+                    },
+                    enabled = if (isLoaded) {
+                        controlReady
+                    } else {
+                        controlReady && (canLoad || canRequestLoad)
+                    },
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.filledTonalButtonColors(
                         containerColor = accent.accentContainer,
                         contentColor = accent.onAccentContainer,
                     ),
                 ) {
-                    Text("Unload")
+                    Text(if (isLoaded) "Finish" else "Refresh")
                 }
             }
-            HoldToLoadButton(
-                enabled = controlReady && canLoad,
-                onLoad = onLoad,
+            WorkoutTelemetryStrip(
+                sets = sets,
+                reps = reps,
+                phase = phase,
+                status = helperStatus,
+                isLoaded = isLoaded,
             )
         }
     }
 }
+
+@Composable
+private fun IsometricRealtimeChart(
+    samples: List<IsometricForceSample>,
+    maxForceN: Double,
+    accentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val tickLabels = listOf(maxForceN, maxForceN * 0.75, maxForceN * 0.5, maxForceN * 0.25, 0.0)
+    val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .width(40.dp)
+                .fillMaxSize(),
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            tickLabels.forEach { value ->
+                Text(
+                    "${value.roundToInt()}N",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                )
+            }
+        }
+        Canvas(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxSize(),
+        ) {
+            val strokeWidth = 2.dp.toPx()
+            repeat(5) { index ->
+                val y = size.height * (index / 4f)
+                drawLine(
+                    color = gridColor,
+                    start = Offset(0f, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = 1.dp.toPx(),
+                )
+            }
+            repeat(5) { index ->
+                val x = size.width * (index / 4f)
+                drawLine(
+                    color = gridColor,
+                    start = Offset(x, 0f),
+                    end = Offset(x, size.height),
+                    strokeWidth = 1.dp.toPx(),
+                )
+            }
+
+            if (samples.isEmpty()) return@Canvas
+
+            val firstElapsed = samples.first().elapsedMillis
+            val normalized = samples.map {
+                IsometricForceSample(
+                    elapsedMillis = (it.elapsedMillis - firstElapsed).coerceAtLeast(0L),
+                    forceN = it.forceN.coerceAtLeast(0.0),
+                )
+            }
+            val durationMillis = normalized.last().elapsedMillis.coerceAtLeast(1000L)
+            val path = Path()
+            normalized.forEachIndexed { index, sample ->
+                val x = (sample.elapsedMillis.toFloat() / durationMillis.toFloat()) * size.width
+                val yRatio = (sample.forceN / maxForceN).coerceIn(0.0, 1.0)
+                val y = size.height - (yRatio.toFloat() * size.height)
+                if (index == 0) {
+                    path.moveTo(x, y)
+                } else {
+                    path.lineTo(x, y)
+                }
+            }
+            drawPath(
+                path = path,
+                color = accentColor,
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+            )
+        }
+    }
+}
+
+@Composable
+private fun IsometricMetricCell(
+    title: String,
+    value: String,
+    valueColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = valueColor,
+        )
+    }
+}
+
+private fun formatTwoDecimals(value: Double): String = String.format(Locale.US, "%.2f", value)
+
+private fun formatPercentage(value: Double): String {
+    val roundedTenth = (value * 10.0).roundToInt() / 10.0
+    return if (roundedTenth % 1.0 == 0.0) {
+        roundedTenth.toInt().toString()
+    } else {
+        String.format(Locale.US, "%.1f", roundedTenth)
+    }
+}
+
+private fun formatSecondsClock(valueMillis: Long): String = String.format(Locale.US, "%.2fs", valueMillis / 1000.0)
+
+private const val ISOMETRIC_EXIT_REENTRY_GRACE_MILLIS = 4_000L
 
 @Composable
 private fun CustomCurveCard(
@@ -4330,6 +5726,7 @@ private fun DigitalWeightDial(
     onTargetSettled: (Double) -> Unit,
     onCycleStep: () -> Unit,
     onOpenDial: () -> Unit,
+    denseLayout: Boolean = false,
 ) {
     val accent = LocalControlAccent.current
     var dragTarget by remember { mutableDoubleStateOf(value) }
@@ -4349,6 +5746,7 @@ private fun DigitalWeightDial(
 
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val compactLayout = maxWidth < 360.dp
+        val reducedLayout = denseLayout && !compactLayout
         Surface(
             color = MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.onSurface,
@@ -4356,13 +5754,25 @@ private fun DigitalWeightDial(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(
-                modifier = Modifier.padding(if (compactLayout) 12.dp else 14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.padding(
+                    when {
+                        compactLayout -> 12.dp
+                        reducedLayout -> 12.dp
+                        else -> 14.dp
+                    },
+                ),
+                verticalArrangement = Arrangement.spacedBy(if (reducedLayout) 8.dp else 10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(if (compactLayout) 8.dp else 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(
+                        when {
+                            compactLayout -> 8.dp
+                            reducedLayout -> 8.dp
+                            else -> 10.dp
+                        },
+                    ),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     WeightStepButton(
@@ -4371,11 +5781,12 @@ private fun DigitalWeightDial(
                             updateTarget(dragTarget - step, settle = true)
                         },
                         onLongClick = onCycleStep,
-                        modifier = Modifier.weight(if (compactLayout) 0.95f else 0.8f),
+                        modifier = Modifier.weight(if (compactLayout || reducedLayout) 0.95f else 0.8f),
+                        compact = reducedLayout,
                     )
                     Column(
                         modifier = Modifier
-                            .weight(if (compactLayout) 1.1f else 1.4f)
+                            .weight(if (compactLayout || reducedLayout) 1.1f else 1.4f)
                             .clip(MaterialTheme.shapes.small)
                             .clickable(onClick = onOpenDial)
                             .padding(vertical = 6.dp),
@@ -4383,7 +5794,11 @@ private fun DigitalWeightDial(
                     ) {
                         Text(
                             label,
-                            style = if (compactLayout) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.displaySmall,
+                            style = when {
+                                compactLayout -> MaterialTheme.typography.headlineLarge
+                                reducedLayout -> MaterialTheme.typography.headlineMedium
+                                else -> MaterialTheme.typography.displaySmall
+                            },
                             fontWeight = FontWeight.Bold,
                             color = accent.accent,
                             textAlign = TextAlign.Center,
@@ -4401,7 +5816,8 @@ private fun DigitalWeightDial(
                             updateTarget(dragTarget + step, settle = true)
                         },
                         onLongClick = onCycleStep,
-                        modifier = Modifier.weight(if (compactLayout) 0.95f else 0.8f),
+                        modifier = Modifier.weight(if (compactLayout || reducedLayout) 0.95f else 0.8f),
+                        compact = reducedLayout,
                     )
                 }
                 Slider(
@@ -4437,6 +5853,7 @@ private fun WeightStepButton(
     label: String,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    compact: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val accent = LocalControlAccent.current
@@ -4446,7 +5863,7 @@ private fun WeightStepButton(
         shape = MaterialTheme.shapes.medium,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         modifier = modifier
-            .height(56.dp)
+            .height(if (compact) 52.dp else 56.dp)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
@@ -5279,6 +6696,7 @@ private fun CommandRow(command: VoltraCommandResult) {
 private fun HoldToLoadButton(
     enabled: Boolean,
     onLoad: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val accent = LocalControlAccent.current
     val color = if (enabled) accent.accent else MaterialTheme.colorScheme.surface
@@ -5287,7 +6705,7 @@ private fun HoldToLoadButton(
         color = color,
         contentColor = textColor,
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(64.dp)
             .combinedClickable(

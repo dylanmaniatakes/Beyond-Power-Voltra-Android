@@ -5,5 +5,5 @@
     <string name="connection_notification_title">Voltra Controller is connected</string>
     <string name="connection_notification_body">Bluetooth diagnostics are active.</string>
     <string name="disconnect">Disconnect</string>
-    <string name="app_version_label">Alpha 1.3</string>
+    <string name="app_version_label">Alpha 1.3.2</string>
 </resources>

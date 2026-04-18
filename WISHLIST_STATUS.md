@@ -1,86 +1,82 @@
 # Voltra Controller Wishlist Status
 
-This file tracks the wishlist without letting the experimental pieces get mixed into the core BLE control work. The rule for now: ship the local Weight Training control path first, then promote features from placeholder to active only after captures or Android-side tests prove the behavior.
+This file is now the active backlog, not the full historical brainstorm.
+Finished alpha features are summarized once and then removed from the day-to-day list so the remaining work is easier to steer.
 
 Status key:
 
-- Done: implemented enough to test in the Android app.
-- In progress: partially implemented, still needs polish or hardware confirmation.
-- Placeholder: visible or designed, but command writes are locked until captures confirm the protocol.
-- Planned: practical, but not started yet.
-- Future: larger project after core control is stable.
+- Shipped: live in the current alpha and usable.
+- Polish: implemented, but still needs UX cleanup or more hardware confidence.
+- Needs capture: blocked on cleaner official-app or device evidence.
+- Planned: practical next work after current polish items settle.
+- Future: larger follow-on project after the local controller is stable.
 
-## App And Control Polish
+## Shipped In Alpha 1.3
 
-| Feature | State | What is needed from you |
-| --- | --- | --- |
-| App name: Voltra Controller | Done | Install the next debug APK and confirm launcher/name look right. |
-| Accent color picker | Done | Pick through the More or Home theme row and report any ugly combinations. |
-| Top-right Weight Off toggle | Done | Test connected to the VOLTRA: unloaded should show Load, loaded should show Weight Off. Export diagnostics if the label disagrees with the device. |
-| Weight Training button exits workout/goes home | In progress | Test whether it returns the VOLTRA to its main mode screen. Export diagnostics if it does not. |
-| Digital dial style weight control | In progress | Set mode now keeps one pending drag value; retest slider drag then Set at 5, 10, 15, and 20 lb. |
-| Tap number to dial in weight | Done | Test 5, 10, 15, and 200 lb entry. |
-| Change weight +/- buttons | Done | Test whether the buttons feel better at 1, 5, 10, 15, or 20. |
-| Customizable +/- increments by hold | Done | Long-press either +/- button to cycle 1, 5, 10, 15, and 20. The separate More-page picker was removed. |
-| Instant weight apply mode | In progress | Hold Set to turn on blue Instant mode. Test gently at low weight and export diagnostics if it queues stale targets. |
-| Default Set/Load mode preference | Done | The More page has a default instant-apply toggle; unload still forces the session back to Set mode. |
-| kg support | In progress | UI can show kg locally, but BLE write encoding is still locked to lb. Need an iPad capture changing weights while the official app is set to kg. |
-| Weight presets | Planned | No capture needed. Need a simple preset shape: name, weight, unit, chains/eccentric/curve later. |
-| Saved device connection button | Done | Test reconnecting after app restart using Connect Saved Device. |
+- Voltra Controller branding and cleaned deployment docs
+- Theme picker with multiple color options
+- Saved-device reconnect flow
+- Top-right load / weight off chip on the control screens
+- Tap-to-enter weight plus +/- controls with hold-to-cycle increments
+- Instant-apply default preference
+- Tablet-aware layout
+- Battery display on Home
+- Rep counting and phase display
+- MQTT Sensor in More
+- HTTP Gateway in More
+- Home launcher tiles for Weight Training, Resistance Band, Damper, Isokinetic, Isometric Test, and Custom Curve
 
-## Live Readings And Workout State
+## Active Backlog
 
 | Feature | State | What is needed from you |
 | --- | --- | --- |
-| VOLTRA battery sync | In progress | App now asks for `BMS_RSOC` during connect instead of waiting for a spontaneous update. Need one Android diagnostic after connect to confirm the Home gauge updates. |
-| Rep counting | Done | User confirmed Android rep count and phase mirror the device. Keep watching for weird resets in longer workouts. |
-| Device-backed set tracking UI | In progress | Android now parses sets from the same live telemetry frame as reps/phase. Retest a 3x4 workout and export diagnostics if the displayed set count disagrees with the Voltra. |
-| Set counter matching device/iPad | In progress | `0x81 0x2B` telemetry byte 3 appears to be set count based on the 3 sets x 4 reps capture. More captures with visible notes will harden this. |
-| Assist mode | In progress | Android now has a captured `FITNESS_ASSIST_MODE` toggle. Test On/Off in Weight Training and export diagnostics if the device UI or feel disagrees with the app. |
-| Chains mode | In progress | Dynamic On/Off now follows the `BP_CHAINS_WEIGHT` value returned by BLE. Android caps Chains to `min(baseWeightLb, 200 - baseWeightLb)` and can edit while loaded. Need clean independent Chains/Inverse captures. |
-| Inverse Chains mode | In progress | Separate dynamic On/Off now writes `FITNESS_INVERSE_CHAIN` and queues a BLE read-back, but recent testing says this parameter ACKs without obvious device effect. Need an official-app capture of inverse on/off. |
-| Eccentric mode | In progress | Dynamic On/Off follows nonzero `BP_ECCENTRIC_WEIGHT`. The editor uses a positive magnitude slider with Add/Reduce direction buttons and can edit while loaded. Need clean load/unload captures at a few base weights to confirm positive overload behavior. |
-| Adjustable custom curve | Placeholder | Need iPad captures selecting a curve, editing one point, saving/applying, load/unload. |
-| Workout logs/tracking | Planned | No BLE capture required for basic local logs. Need rep/set state to be reliable first. |
-| Export saved workout history as CSV | Planned | Depends on local workout logs. Need desired columns once logs exist. |
+| Exit workout behavior across all modes | Polish | Keep testing the left-side exit flow on Weight Training, Resistance Band, Damper, Isokinetic, and Isometric. Export diagnostics if the device stays in the workout screen or lands in the wrong mode. |
+| Weight control feel | Polish | The current slider + tap entry flow works, but we should keep sanding down any jitter or awkward taps. Note the exact screen and control when something feels sticky. |
+| kg parity across all workout profiles | Polish | Strength mode is farther along than Resistance Band and the advanced load-profile editors. Keep noting where kg still falls back to lb behavior. |
+| Set tracking hardening | Polish | Rep tracking is good. Keep watching whether sets stay aligned with the unit during longer workouts or mode switches. |
+| Isometric live telemetry | Polish | Load/unload is working, but the live metrics still need better decoding. The highest-value captures are short, isolated Isometric pulls with clear notes. |
+| Assist mode validation | Polish | The toggle is wired in; keep checking whether the app state, device UI, and real feel all agree. |
+| Chains live state sync | Polish | The regular Chains path is close, but keep noting any cases where the toggle state or amount lags the device. |
+| Inverse Chains independence | Needs capture | This still needs stronger proof that the on/off state and amount are fully independent from regular Chains. Clean official-app captures are still the key blocker. |
+| Eccentric overload edge cases | Polish | Positive and negative ranges are exposed, but we still want more confidence near the device clamps and minimum return load behavior. |
+| Resistance Band advanced settings parity | Polish | Experience, Standard/Inverse, Progressive Length, Curve, and Band Length are all in play now; keep reporting anything that reads correctly but does not actually set on the unit. |
+| Custom Curve apply/edit flow | Needs capture | The mode exists in the app, but curve editing and applying still need cleaner isolated captures before it should be promoted beyond under-development status. |
+| Local workout history | Planned | The app now has enough live state to start recording local sessions once the telemetry edges are a little calmer. |
+| Workout export as CSV | Planned | This should land right after local history so the export columns can match the stored session shape. |
+| Weight presets | Planned | No capture blocker. This is mostly a product-shape decision once the weight/settings editors feel final. |
 
-## More Page And Integrations
-
-| Feature | State | What is needed from you |
-| --- | --- | --- |
-| MQTT Sensor | Planned | Need broker host/port/topic preferences later. Android LAN MQTT still needs the Android INTERNET permission, even for local network only. |
-| Gateway mode over LAN | Future | Need core controls stable first. Later we need a command schema and security model. Also requires Android INTERNET permission. |
-| Google voice/platform integration | Future | Need gateway or official Android integration design first. Likely requires internet/account-style platform plumbing. |
-| In-app voice load/unload | Future | Need safety UX decisions. Voice recognition may need Android speech services and careful false-trigger protection. |
-| Local automation integration path | Future | Start from protocol notes after Android control is stable. Need a host with reliable Bluetooth access if this moves beyond the Android app. |
-| Google Health Connect API | Future | Need workout log fields first. Useful for workout duration, resistance, sets, reps, and calories only if we can derive them honestly. |
-| Fitbit API access | Future | Need a concrete use case and auth flow decision. |
-| Hevy workout integration | Future | Need API feasibility, auth decision, and a mapping from Hevy routines to Voltra presets. |
-
-## Device And Multi-User
+## Device, User, And Companion Features
 
 | Feature | State | What is needed from you |
 | --- | --- | --- |
-| Fully local user profiles | Planned | Need profile fields you care about: name, body weight, units, default presets, MQTT identity. |
-| Paired companion support for 2 VOLTRAs | Future | Need single VOLTRA rock solid first. Later we need paired-device official captures and two-device Android hardware tests. |
-| Android watch support | Future | Need phone app core stable. Later we can build a Wear OS companion with weight set and load/unload; crown input is a good fit. |
-| Android widget | Future | Need stable connection state and safe command model. Widgets are awkward for Bluetooth commands, so this should come after gateway/watch decisions. |
-| Tablet UI | Planned | Need screenshots from your tablet once the phone layout is stable. |
-| App config/user data backup | Planned | Need preference for local file only vs Google Drive vs OneDrive. Cloud backup options add account/provider work. |
-| Bootup intro selection/custom logo | Future | Need official iPad captures of selecting boot intros. If uploads are used, we need file format, size limits, transfer characteristic, and checksum. |
+| Fully local user profiles | Planned | Need to settle what belongs in a profile: name, units, default presets, MQTT identity, and maybe notes. |
+| Config and data backup | Planned | Need a decision on local-file-only backup vs cloud-provider options. |
+| Android watch companion | Future | Good fit once phone control is calmer. The crown-driven weight selector still makes sense. |
+| Paired companion support for two VOLTRAs | Future | Save this until single-device control feels boringly reliable. |
+| Android widget | Future | Probably only worth doing after connection state and command safety are extremely stable. |
+| Boot intro / custom logo selection | Future | Needs cleaner official-app evidence and likely a file-transfer path. |
 
-## Capture Queue
+## Integrations
 
-The existing detailed capture plan lives in `CAPTURE_CHECKLIST.md`. Highest-value next captures:
+| Feature | State | What is needed from you |
+| --- | --- | --- |
+| Home Assistant path | Planned | MQTT Sensor and HTTP Gateway are the first pieces. Next step is deciding whether we want a local integration, a lightweight bridge, or both. |
+| Local automation workflows | Planned | The new HTTP gateway makes this more practical. Next step is deciding which control/state flows should be easiest to script first. |
+| In-app voice load/unload | Future | Needs careful safety design before it should move closer. |
+| Google Health Connect | Future | Only makes sense once local workout history is stable and honest enough to export. |
+| Fitbit integration | Future | Needs a real use case before it should compete with core control work. |
+| Hevy integration | Future | Interesting once presets and workout history exist, but not a near-term blocker. |
 
-1. Rep count validation: Weight Training at 5 lb, load, exactly 1 rep, unload, export. Repeat for 2, 3, and 5 reps.
-2. Exit workout: connect, enter Weight Training, load/unload once, tap the official app control that exits to device home, export.
-3. kg mode: switch official app to kg, set the minimum, a mid value, and near max, export.
-4. Chains and Inverse Chains: clean regular chains values, then inverse chains off/on, with no Eccentric changes mixed in.
-5. Eccentric: clean off/on, small/mid/near-floor reduction values, load/unload after each.
-6. Set counter: complete several sets and note the visible set number after each set, especially if the count ever resets.
-7. Custom curve: select an existing curve, edit one point, save/apply, load/unload.
-8. Resistance Band, Damper, Isokinetic, and Rowing: one short clean capture per mode before we add active buttons.
-9. Battery and safety: naturally low battery, lock/child-lock states if easy and safe, disconnect/reconnect during a normal session.
+## Developer / Under Development
 
-For every capture, include a short text note with exact button presses and visible device/app state. The notes matter as much as the hex.
+- Custom Curve remains under development even though the tile exists.
+- Rowing should stay hidden behind developer-only paths until we have clean captures and a safe control model.
+- Protocol expansion should continue to follow captured evidence, not guessed commands.
+
+## Highest-Value Next Captures
+
+1. Isometric: arm/load, one short pull, unload, with a note about what the iPad shows for current force, peak force, and timer.
+2. Inverse Chains: clean off/on and amount changes with regular Chains left at zero, then one repeat with regular Chains nonzero.
+3. Custom Curve: select one saved curve, edit a single point, save, apply, do one rep, export immediately.
+4. kg mode outside Weight Training: a clean official-app pass in Resistance Band and one advanced editor while the app is set to kg.
+5. Any mismatch between app state and device state: export right after the mismatch while the screen is still visible.

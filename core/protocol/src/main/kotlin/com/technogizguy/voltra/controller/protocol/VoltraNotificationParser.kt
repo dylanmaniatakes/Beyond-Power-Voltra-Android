@@ -93,6 +93,7 @@ object VoltraNotificationParser {
         val fitnessMode = params.uint16(PARAM_BP_SET_FITNESS_MODE)
         val workoutState = params.uint8(PARAM_FITNESS_WORKOUT_STATE)
         val isometricTelemetry = parseIsometricTelemetry(packet, current, nowMillis)
+        val isometricWaveform = parseIsometricWaveform(packet, current)
         val workoutMode = workoutModeLabel(
             mode = fitnessMode,
             workoutState = workoutState,
@@ -129,6 +130,7 @@ object VoltraNotificationParser {
             isometricMaxForceLb == null &&
             isometricMaxDurationSeconds == null &&
             isometricTelemetry == null &&
+            isometricWaveform == null &&
             workoutMode == null &&
             repTelemetry == null
         ) {
@@ -136,6 +138,79 @@ object VoltraNotificationParser {
         }
 
         val leavingIsometric = workoutState != null && workoutState != VoltraControlFrames.WORKOUT_STATE_ISOMETRIC
+        val currentWasInIsometric = current.workoutMode?.startsWith("Isometric Test") == true
+        val retainCompletedIsometricAttempt = current.isometricWaveformSamplesN.isNotEmpty() ||
+            current.isometricPeakRelativeForcePercent != null
+        val hasCollectedIsometricLiveSample = current.isometricWaveformSamplesN.isNotEmpty() ||
+            current.isometricPeakRelativeForcePercent != null ||
+            current.isometricTelemetryStartTick != null
+        val enteringFreshIsometricScreen =
+            workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
+                !currentWasInIsometric &&
+                current.isometricCurrentForceN == null &&
+                current.isometricTelemetryStartTick == null &&
+                current.isometricWaveformSamplesN.isEmpty() &&
+                isometricTelemetry == null &&
+                isometricWaveform == null
+        val readyIsometricWithoutTelemetry =
+            workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
+                VoltraControlFrames.isReadyForWorkoutState(fitnessMode, workoutState) &&
+                isometricTelemetry == null &&
+                !hasCollectedIsometricLiveSample
+        val completedLegacyIsometricAttempt =
+            isometricTelemetry?.currentForceN == null &&
+                isometricTelemetry?.carrierStatusSecondary == TELEMETRY_ISOMETRIC_COMPLETED_MARKER
+        val currentPeakForceForSummaryReconciliation = current.isometricPeakForceN
+        val summaryPeakForceForReconciliation = isometricTelemetry?.peakForceN
+        val shouldRescaleSparseWaveformToSummary = if (
+            isometricTelemetry?.peakRelativeForcePercent != null &&
+            isometricTelemetry.currentForceN == null &&
+            current.isometricCurrentForceN == null &&
+            currentPeakForceForSummaryReconciliation != null &&
+            summaryPeakForceForReconciliation != null &&
+            current.isometricWaveformSamplesN.size in 1..MAX_SUMMARY_RECONCILIATION_SPARSE_SAMPLES
+        ) {
+            currentPeakForceForSummaryReconciliation >
+                summaryPeakForceForReconciliation + STALE_ISOMETRIC_SUMMARY_FORCE_TOLERANCE_N
+        } else {
+            false
+        }
+        val rescaledSparseWaveformSamples = if (shouldRescaleSparseWaveformToSummary) {
+            val currentPeak = current.isometricPeakForceN ?: 0.0
+            val summaryPeak = isometricTelemetry?.peakForceN ?: 0.0
+            if (currentPeak > 0.0 && summaryPeak > 0.0) {
+                val scale = summaryPeak / currentPeak
+                current.isometricWaveformSamplesN.map { (it * scale).coerceAtLeast(0.0) }
+            } else {
+                emptyList()
+            }
+        } else {
+            current.isometricWaveformSamplesN
+        }
+        val isometricWaveformSamples = when {
+            enteringFreshIsometricScreen -> emptyList()
+            leavingIsometric && retainCompletedIsometricAttempt -> current.isometricWaveformSamplesN
+            leavingIsometric -> emptyList()
+            isometricWaveform != null -> isometricWaveform.samplesN
+            isometricTelemetry?.currentForceN != null -> {
+                val baseSamples = if (isometricTelemetry.startingNewAttempt) {
+                    emptyList()
+                } else {
+                    current.isometricWaveformSamplesN
+                }
+                (baseSamples + isometricTelemetry.currentForceN).takeLast(MAX_ISOMETRIC_WAVEFORM_SAMPLES)
+            }
+            shouldRescaleSparseWaveformToSummary -> rescaledSparseWaveformSamples
+            else -> current.isometricWaveformSamplesN
+        }
+        val isometricWaveformLastChunkIndex = when {
+            enteringFreshIsometricScreen -> null
+            leavingIsometric && retainCompletedIsometricAttempt -> current.isometricWaveformLastChunkIndex
+            leavingIsometric -> null
+            isometricWaveform != null -> isometricWaveform.lastChunkIndex
+            isometricTelemetry?.startingNewAttempt == true -> null
+            else -> current.isometricWaveformLastChunkIndex
+        }
 
         return current.copy(
             serialNumber = serial ?: current.serialNumber,
@@ -167,30 +242,73 @@ object VoltraNotificationParser {
             isometricMaxForceLb = isometricMaxForceLb ?: current.isometricMaxForceLb,
             isometricMaxDurationSeconds = isometricMaxDurationSeconds ?: current.isometricMaxDurationSeconds,
             isometricCurrentForceN = when {
+                enteringFreshIsometricScreen -> null
                 leavingIsometric -> null
-                isometricTelemetry != null -> isometricTelemetry.currentForceN
+                readyIsometricWithoutTelemetry -> null
+                completedLegacyIsometricAttempt -> null
+                isometricTelemetry?.currentForceN != null -> isometricTelemetry.currentForceN
+                isometricTelemetry != null -> if (hasCollectedIsometricLiveSample) current.isometricCurrentForceN else null
                 else -> current.isometricCurrentForceN
             },
             isometricPeakForceN = when {
+                enteringFreshIsometricScreen -> null
+                leavingIsometric && retainCompletedIsometricAttempt -> current.isometricPeakForceN
                 leavingIsometric -> null
-                isometricTelemetry != null -> isometricTelemetry.peakForceN
+                isometricTelemetry?.peakForceN != null -> isometricTelemetry.peakForceN
+                isometricTelemetry != null -> if (hasCollectedIsometricLiveSample) current.isometricPeakForceN else null
                 else -> current.isometricPeakForceN
             },
-            isometricElapsedMillis = when {
+            isometricPeakRelativeForcePercent = when {
+                enteringFreshIsometricScreen -> null
+                leavingIsometric && retainCompletedIsometricAttempt -> current.isometricPeakRelativeForcePercent
                 leavingIsometric -> null
-                isometricTelemetry != null -> isometricTelemetry.elapsedMillis
+                isometricTelemetry != null -> when {
+                    isometricTelemetry.startingNewAttempt -> isometricTelemetry.peakRelativeForcePercent
+                    isometricTelemetry.peakRelativeForcePercent != null -> isometricTelemetry.peakRelativeForcePercent
+                    else -> current.isometricPeakRelativeForcePercent
+                }
+                else -> current.isometricPeakRelativeForcePercent
+            },
+            isometricElapsedMillis = when {
+                enteringFreshIsometricScreen -> null
+                leavingIsometric && retainCompletedIsometricAttempt -> current.isometricElapsedMillis
+                leavingIsometric -> null
+                isometricTelemetry?.elapsedMillis != null -> isometricTelemetry.elapsedMillis
+                isometricTelemetry != null -> if (hasCollectedIsometricLiveSample) current.isometricElapsedMillis else null
                 else -> current.isometricElapsedMillis
             },
             isometricTelemetryTick = when {
+                enteringFreshIsometricScreen -> null
                 leavingIsometric -> null
                 isometricTelemetry != null -> isometricTelemetry.tick
                 else -> current.isometricTelemetryTick
             },
             isometricTelemetryStartTick = when {
+                enteringFreshIsometricScreen -> null
                 leavingIsometric -> null
                 isometricTelemetry != null -> isometricTelemetry.startTick
                 else -> current.isometricTelemetryStartTick
             },
+            isometricCarrierForceN = when {
+                enteringFreshIsometricScreen -> null
+                leavingIsometric -> null
+                isometricTelemetry != null -> isometricTelemetry.rawCarrierForceN
+                else -> current.isometricCarrierForceN
+            },
+            isometricCarrierStatusPrimary = when {
+                enteringFreshIsometricScreen -> null
+                leavingIsometric -> null
+                isometricTelemetry != null -> isometricTelemetry.carrierStatusPrimary
+                else -> current.isometricCarrierStatusPrimary
+            },
+            isometricCarrierStatusSecondary = when {
+                enteringFreshIsometricScreen -> null
+                leavingIsometric -> null
+                isometricTelemetry != null -> isometricTelemetry.carrierStatusSecondary
+                else -> current.isometricCarrierStatusSecondary
+            },
+            isometricWaveformSamplesN = isometricWaveformSamples,
+            isometricWaveformLastChunkIndex = isometricWaveformLastChunkIndex,
             setCount = repTelemetry?.setCount ?: current.setCount,
             repCount = repTelemetry?.count ?: current.repCount,
             repPhase = repTelemetry?.phase ?: current.repPhase,
@@ -348,20 +466,51 @@ object VoltraNotificationParser {
     private const val TELEMETRY_REP_COUNT_OFFSET = 4
     private const val TELEMETRY_REP_MIN_BYTES = 6
     private const val TELEMETRY_ISOMETRIC_MIN_BYTES = 45
+    private const val TELEMETRY_ISOMETRIC_SUMMARY_BYTES = 39
     private const val TELEMETRY_ISOMETRIC_STATUS_PRIMARY_OFFSET = 11
     private const val TELEMETRY_ISOMETRIC_STATUS_SECONDARY_OFFSET = 13
     private const val TELEMETRY_ISOMETRIC_TICK_OFFSET = 27
     private const val TELEMETRY_ISOMETRIC_FORCE_OFFSET = 43
     private const val TELEMETRY_ISOMETRIC_ACTIVE_MARKER = 2
+    private const val TELEMETRY_ISOMETRIC_PROGRESS_MARKER = 3
     private const val TELEMETRY_ISOMETRIC_READY_MARKER = 4
+    private const val TELEMETRY_ISOMETRIC_COARSE_LIVE_FORCE_MARKER = 1
     private const val TELEMETRY_ISOMETRIC_ARMED_MARKER = 10
+    private const val TELEMETRY_ISOMETRIC_COMPLETED_MARKER = 11
+    private const val TELEMETRY_ISOMETRIC_LIVE_FORCE_MARKER = 12
+    private val TELEMETRY_ISOMETRIC_EXTENDED_LIVE_FORCE_MARKERS = 12..15
+    private const val TELEMETRY_ISOMETRIC_SUMMARY_TYPE = 0x80
+    private const val TELEMETRY_ISOMETRIC_SUMMARY_LENGTH_MARKER = 0x25
+    private const val TELEMETRY_ISOMETRIC_SUMMARY_PEAK_FORCE_OFFSET = 23
+    private const val TELEMETRY_ISOMETRIC_SUMMARY_PEAK_RELATIVE_FORCE_OFFSET = 29
+    private const val TELEMETRY_ISOMETRIC_SUMMARY_DURATION_SECONDS_OFFSET = 33
+    private const val TELEMETRY_ISOMETRIC_WAVEFORM_TYPE = 0x93
     private const val MAX_REASONABLE_SET_COUNT = 1_000
     private const val MAX_REASONABLE_REP_COUNT = 10_000
     private const val ISOMETRIC_SAMPLE_RATE_MIN = 40
     private const val ISOMETRIC_SAMPLE_RATE_MAX = 60
-    private const val MAX_REASONABLE_ISOMETRIC_FORCE_LB = 220
+    private const val MAX_REASONABLE_ISOMETRIC_DURATION_SECONDS = 60
+    private const val MAX_REASONABLE_ISOMETRIC_RELATIVE_FORCE_TENTHS_PERCENT = 1_000
+    private const val MAX_REASONABLE_ISOMETRIC_FORCE_LB = 450
+    private const val MAX_REASONABLE_ISOMETRIC_FORCE_N = 2_000.0
+    private const val MAX_REASONABLE_ISOMETRIC_GRAPH_FORCE_N = 2_000.0
+    private const val MAX_REASONABLE_ISOMETRIC_STATUS_WORD = 0x0200
+    private const val MAX_REASONABLE_ISOMETRIC_AUX_WORD = 4_000
+    private const val MAX_SUMMARY_RECONCILIATION_SPARSE_SAMPLES = 16
+    private const val LEGACY_ISOMETRIC_SENTINEL_FORCE_N = 390.0
+    private const val STALE_ISOMETRIC_SUMMARY_FORCE_TOLERANCE_N = 5.0
+    private const val STALE_ISOMETRIC_SUMMARY_ELAPSED_TOLERANCE_MILLIS = 250L
+    // The legacy AA81 Isometric live branch reports force in tenths of pounds.
+    // Successful Android traces use statusSecondary 12..15 as one continuous
+    // live pull window.
+    private const val LEGACY_ISOMETRIC_PULL_FORCE_SCALE = 0.44482216152605
+    private const val LEGACY_ISOMETRIC_COARSE_FORCE_SCALE = 1.067
+    private const val ISOMETRIC_WAVEFORM_HEADER_BYTES = 6
+    private const val MAX_ISOMETRIC_WAVEFORM_SAMPLES = 2_400
     private const val LB_TO_NEWTONS = 4.4482216152605
-    private val ISOMETRIC_STREAM_VARIANTS = setOf(1, 2)
+    private val LEGACY_ISOMETRIC_STREAM_VARIANTS = setOf(1, 2, 3)
+    private val TELEMETRY_ISOMETRIC_COARSE_LIVE_FORCE_RANGE_N = 1.0..MAX_REASONABLE_ISOMETRIC_FORCE_N
+    private val TELEMETRY_ISOMETRIC_WAVEFORM_MARKERS = setOf(0xCC, 0x82, 0xA8)
 
     private fun ParsedVoltraPacket.decodeParams(): Map<Int, Number> {
         if (commandId != CMD_ASYNC_STATE && commandId != CMD_BULK_REGISTER) return emptyMap()
@@ -462,7 +611,49 @@ object VoltraNotificationParser {
         nowMillis: Long,
     ): IsometricTelemetry? {
         return parseLegacyIsometricTelemetry(packet, current)
+            ?: parseIsometricSummaryTelemetry(packet, current, nowMillis)
             ?: parseB4IsometricTelemetry(packet, current, nowMillis)
+    }
+
+    private fun parseIsometricWaveform(
+        packet: ParsedVoltraPacket,
+        current: VoltraReading,
+    ): IsometricWaveform? {
+        if (packet.commandId != CMD_TELEMETRY) return null
+        val payload = packet.payload
+        if (payload.size < ISOMETRIC_WAVEFORM_HEADER_BYTES) return null
+        if (payload[0].u8() != TELEMETRY_ISOMETRIC_WAVEFORM_TYPE) return null
+        if (payload[1].u8() !in TELEMETRY_ISOMETRIC_WAVEFORM_MARKERS) return null
+
+        val chunkIndex = payload[2].u8()
+        val declaredSampleCount = payload.u16le(4)
+        val availableSampleCount = (payload.size - ISOMETRIC_WAVEFORM_HEADER_BYTES) / 2
+        val sampleCount = minOf(declaredSampleCount, availableSampleCount)
+        if (sampleCount <= 0) return null
+
+        val parsedSamples = buildList(sampleCount) {
+            repeat(sampleCount) { index ->
+                val offset = ISOMETRIC_WAVEFORM_HEADER_BYTES + (index * 2)
+                val sampleN = (payload.u16le(offset) / 10.0) * LB_TO_NEWTONS
+                if (sampleN !in 0.0..MAX_REASONABLE_ISOMETRIC_GRAPH_FORCE_N) return null
+                add(sampleN)
+            }
+        }
+        if (parsedSamples.isEmpty()) return null
+
+        val lastChunkIndex = current.isometricWaveformLastChunkIndex
+        val shouldReset = chunkIndex <= 1 ||
+            lastChunkIndex == null ||
+            chunkIndex <= lastChunkIndex
+        val mergedSamples = if (shouldReset) {
+            parsedSamples
+        } else {
+            (current.isometricWaveformSamplesN + parsedSamples).takeLast(MAX_ISOMETRIC_WAVEFORM_SAMPLES)
+        }
+        return IsometricWaveform(
+            samplesN = mergedSamples,
+            lastChunkIndex = chunkIndex,
+        )
     }
 
     private fun parseLegacyIsometricTelemetry(
@@ -481,40 +672,144 @@ object VoltraNotificationParser {
         val tick = payload.u32le(TELEMETRY_ISOMETRIC_TICK_OFFSET).toLong()
         val statusPrimary = payload.u16le(TELEMETRY_ISOMETRIC_STATUS_PRIMARY_OFFSET)
         val statusSecondary = payload.u16le(TELEMETRY_ISOMETRIC_STATUS_SECONDARY_OFFSET)
-        val activeFrame = statusSecondary == TELEMETRY_ISOMETRIC_ACTIVE_MARKER && statusPrimary in 0..6
-
-        if (!activeFrame) {
-            return when (statusSecondary) {
-                TELEMETRY_ISOMETRIC_READY_MARKER,
-                TELEMETRY_ISOMETRIC_ARMED_MARKER,
-                -> IsometricTelemetry(
-                    currentForceN = null,
-                    peakForceN = current.isometricPeakForceN,
-                    elapsedMillis = current.isometricElapsedMillis,
-                    tick = tick,
-                    startTick = null,
-                )
-
-                else -> null
+        val rawCarrierForceN = (payload.u16le(TELEMETRY_ISOMETRIC_FORCE_OFFSET) / 10.0) *
+            LEGACY_ISOMETRIC_COARSE_FORCE_SCALE
+        if (statusSecondary in TELEMETRY_ISOMETRIC_EXTENDED_LIVE_FORCE_MARKERS) {
+            val currentForceN = statusPrimary.toDouble() * LEGACY_ISOMETRIC_PULL_FORCE_SCALE
+            if (currentForceN !in 0.0..MAX_REASONABLE_ISOMETRIC_FORCE_N) return null
+            val startingNewAttempt =
+                current.isometricCurrentForceN == null ||
+                    current.isometricTelemetryStartTick == null ||
+                    current.isometricCarrierStatusSecondary !in TELEMETRY_ISOMETRIC_EXTENDED_LIVE_FORCE_MARKERS
+            val startTick = if (startingNewAttempt) tick else current.isometricTelemetryStartTick ?: tick
+            val elapsedMillis = (tick - startTick).coerceAtLeast(0L)
+            val peakForceN = if (startingNewAttempt) {
+                currentForceN
+            } else {
+                maxOf(current.isometricPeakForceN ?: currentForceN, currentForceN)
             }
+            return IsometricTelemetry(
+                currentForceN = currentForceN,
+                peakForceN = peakForceN,
+                peakRelativeForcePercent = current.isometricPeakRelativeForcePercent,
+                elapsedMillis = elapsedMillis,
+                tick = tick,
+                startTick = startTick,
+                startingNewAttempt = startingNewAttempt,
+                rawCarrierForceN = rawCarrierForceN,
+                carrierStatusPrimary = statusPrimary,
+                carrierStatusSecondary = statusSecondary,
+            )
+        }
+        if (
+            statusPrimary == 0 &&
+            statusSecondary == TELEMETRY_ISOMETRIC_COARSE_LIVE_FORCE_MARKER &&
+            rawCarrierForceN in TELEMETRY_ISOMETRIC_COARSE_LIVE_FORCE_RANGE_N
+        ) {
+            val currentForceN = rawCarrierForceN
+            val startingNewAttempt =
+                current.isometricCurrentForceN == null ||
+                    current.isometricTelemetryStartTick == null ||
+                    current.isometricCarrierStatusSecondary != TELEMETRY_ISOMETRIC_COARSE_LIVE_FORCE_MARKER
+            val startTick = if (startingNewAttempt) tick else current.isometricTelemetryStartTick ?: tick
+            val elapsedMillis = (tick - startTick).coerceAtLeast(0L)
+            val peakForceN = if (startingNewAttempt) {
+                currentForceN
+            } else {
+                maxOf(current.isometricPeakForceN ?: currentForceN, currentForceN)
+            }
+            return IsometricTelemetry(
+                currentForceN = currentForceN,
+                peakForceN = peakForceN,
+                peakRelativeForcePercent = current.isometricPeakRelativeForcePercent,
+                elapsedMillis = elapsedMillis,
+                tick = tick,
+                startTick = startTick,
+                startingNewAttempt = startingNewAttempt,
+                rawCarrierForceN = rawCarrierForceN,
+                carrierStatusPrimary = statusPrimary,
+                carrierStatusSecondary = statusSecondary,
+            )
+        }
+        if (
+            statusSecondary != TELEMETRY_ISOMETRIC_ACTIVE_MARKER &&
+            statusSecondary != TELEMETRY_ISOMETRIC_PROGRESS_MARKER &&
+            statusSecondary != TELEMETRY_ISOMETRIC_READY_MARKER &&
+            statusSecondary != TELEMETRY_ISOMETRIC_ARMED_MARKER &&
+            statusSecondary != TELEMETRY_ISOMETRIC_COMPLETED_MARKER
+        ) {
+            return null
         }
 
-        val currentForceN = payload.u16le(TELEMETRY_ISOMETRIC_FORCE_OFFSET) / 10.0
-        val startingNewAttempt = current.isometricCurrentForceN == null || current.isometricTelemetryStartTick == null
-        val startTick = if (startingNewAttempt) tick else current.isometricTelemetryStartTick ?: tick
-        val elapsedMillis = (tick - startTick).coerceAtLeast(0L)
-        val peakForceN = if (startingNewAttempt) {
-            currentForceN
-        } else {
-            maxOf(current.isometricPeakForceN ?: currentForceN, currentForceN)
-        }
+        val retainCompletedAttempt =
+            current.isometricWaveformSamplesN.isNotEmpty() ||
+                current.isometricPeakRelativeForcePercent != null ||
+                current.isometricTelemetryStartTick != null
 
         return IsometricTelemetry(
-            currentForceN = currentForceN,
-            peakForceN = peakForceN,
-            elapsedMillis = elapsedMillis,
+            currentForceN = null,
+            peakForceN = if (retainCompletedAttempt) current.isometricPeakForceN else null,
+            peakRelativeForcePercent = if (retainCompletedAttempt) current.isometricPeakRelativeForcePercent else null,
+            elapsedMillis = if (retainCompletedAttempt) current.isometricElapsedMillis else null,
             tick = tick,
-            startTick = startTick,
+            startTick = if (retainCompletedAttempt) current.isometricTelemetryStartTick else null,
+            startingNewAttempt = false,
+            rawCarrierForceN = rawCarrierForceN,
+            carrierStatusPrimary = statusPrimary,
+            carrierStatusSecondary = statusSecondary,
+        )
+    }
+
+    private fun parseIsometricSummaryTelemetry(
+        packet: ParsedVoltraPacket,
+        current: VoltraReading,
+        nowMillis: Long,
+    ): IsometricTelemetry? {
+        if (packet.commandId != CMD_TELEMETRY) return null
+        val payload = packet.payload
+        if (payload.size != TELEMETRY_ISOMETRIC_SUMMARY_BYTES) return null
+        if (payload[0].u8() != TELEMETRY_ISOMETRIC_SUMMARY_TYPE) return null
+        if (payload[1].u8() != TELEMETRY_ISOMETRIC_SUMMARY_LENGTH_MARKER) return null
+
+        val hasCollectedAttemptEvidence =
+            current.isometricTelemetryStartTick != null ||
+                current.isometricCurrentForceN != null ||
+                current.isometricWaveformSamplesN.isNotEmpty()
+        if (!hasCollectedAttemptEvidence) return null
+
+        val peakForceTenthsN = payload.u16le(TELEMETRY_ISOMETRIC_SUMMARY_PEAK_FORCE_OFFSET)
+        val peakRelativeTenthsPercent = payload.u16le(TELEMETRY_ISOMETRIC_SUMMARY_PEAK_RELATIVE_FORCE_OFFSET)
+        val durationSeconds = payload.u16le(TELEMETRY_ISOMETRIC_SUMMARY_DURATION_SECONDS_OFFSET)
+        if (peakForceTenthsN !in 0..(MAX_REASONABLE_ISOMETRIC_FORCE_N * 10.0).toInt()) return null
+        if (peakRelativeTenthsPercent !in 0..MAX_REASONABLE_ISOMETRIC_RELATIVE_FORCE_TENTHS_PERCENT) return null
+        if (durationSeconds !in 0..MAX_REASONABLE_ISOMETRIC_DURATION_SECONDS) return null
+        val peakForceN = peakForceTenthsN / 10.0
+        val elapsedMillis = durationSeconds * 1_000L
+        val currentPeakForceN = current.isometricPeakForceN
+        val currentElapsedMillis = current.isometricElapsedMillis
+        val summaryShouldOverrideSparseCarrierTrace =
+            current.isometricCurrentForceN == null &&
+                current.isometricPeakRelativeForcePercent == null &&
+                current.isometricWaveformSamplesN.size in 1..MAX_SUMMARY_RECONCILIATION_SPARSE_SAMPLES &&
+                current.isometricCarrierStatusSecondary == TELEMETRY_ISOMETRIC_ARMED_MARKER
+        val summaryLooksStale =
+            (currentPeakForceN != null &&
+                peakForceN + STALE_ISOMETRIC_SUMMARY_FORCE_TOLERANCE_N < currentPeakForceN) ||
+                (currentElapsedMillis != null &&
+                    elapsedMillis + STALE_ISOMETRIC_SUMMARY_ELAPSED_TOLERANCE_MILLIS < currentElapsedMillis)
+        if (summaryLooksStale && !summaryShouldOverrideSparseCarrierTrace) return null
+
+        return IsometricTelemetry(
+            currentForceN = null,
+            peakForceN = peakForceN,
+            peakRelativeForcePercent = peakRelativeTenthsPercent / 10.0,
+            elapsedMillis = elapsedMillis,
+            tick = current.isometricTelemetryTick ?: nowMillis,
+            startTick = current.isometricTelemetryStartTick,
+            startingNewAttempt = false,
+            rawCarrierForceN = current.isometricCarrierForceN,
+            carrierStatusPrimary = current.isometricCarrierStatusPrimary,
+            carrierStatusSecondary = current.isometricCarrierStatusSecondary,
         )
     }
 
@@ -525,14 +820,24 @@ object VoltraNotificationParser {
     ): IsometricTelemetry? {
         if (packet.commandId != CMD_ISOMETRIC_STREAM) return null
         val payload = packet.payload
-        if (payload.size != 8) return null
-        if (payload.u16le(2) !in ISOMETRIC_STREAM_VARIANTS) return null
+        return when (payload.size) {
+            8 -> parseLegacyB4IsometricTelemetry(payload, current, nowMillis)
+                ?: parseModernB4IsometricTelemetry(payload, current, nowMillis)
+            12 -> parseExtendedModernB4IsometricTelemetry(payload, current, nowMillis)
+            else -> null
+        }
+    }
+
+    private fun parseLegacyB4IsometricTelemetry(
+        payload: ByteArray,
+        current: VoltraReading,
+        nowMillis: Long,
+    ): IsometricTelemetry? {
+        if (payload.u16le(2) !in LEGACY_ISOMETRIC_STREAM_VARIANTS) return null
         if (payload.u16le(6) !in ISOMETRIC_SAMPLE_RATE_MIN..ISOMETRIC_SAMPLE_RATE_MAX) return null
 
-        val currentForceLb = payload.u16le(0).toDouble()
-        if (currentForceLb !in 0.0..MAX_REASONABLE_ISOMETRIC_FORCE_LB.toDouble()) return null
-
-        val currentForceN = currentForceLb * LB_TO_NEWTONS
+        val currentForceN = payload.u16le(0).toDouble() * LB_TO_NEWTONS
+        if (currentForceN !in 0.0..MAX_REASONABLE_ISOMETRIC_FORCE_N) return null
         val startingNewAttempt = current.isometricCurrentForceN == null || current.isometricTelemetryStartTick == null
         val startTick = if (startingNewAttempt) nowMillis else current.isometricTelemetryStartTick ?: nowMillis
         val elapsedMillis = (nowMillis - startTick).coerceAtLeast(0L)
@@ -545,9 +850,92 @@ object VoltraNotificationParser {
         return IsometricTelemetry(
             currentForceN = currentForceN,
             peakForceN = peakForceN,
+            peakRelativeForcePercent = null,
             elapsedMillis = elapsedMillis,
             tick = nowMillis,
             startTick = startTick,
+            startingNewAttempt = startingNewAttempt,
+            rawCarrierForceN = currentForceN,
+            carrierStatusPrimary = payload.u16le(2),
+            carrierStatusSecondary = null,
+        )
+    }
+
+    private fun parseModernB4IsometricTelemetry(
+        payload: ByteArray,
+        current: VoltraReading,
+        nowMillis: Long,
+    ): IsometricTelemetry? {
+        val currentForceN = payload.u16le(0).toDouble()
+        val statusWord = payload.u16le(2)
+        val reserved = payload.u16le(4)
+        val trailingWord = payload.u16le(6)
+        if (currentForceN !in 0.0..MAX_REASONABLE_ISOMETRIC_FORCE_N) return null
+        if (statusWord !in 0..MAX_REASONABLE_ISOMETRIC_STATUS_WORD) return null
+        if (reserved !in 0..MAX_REASONABLE_ISOMETRIC_AUX_WORD) return null
+        if (trailingWord !in 0..MAX_REASONABLE_ISOMETRIC_AUX_WORD) return null
+
+        val startingNewAttempt = current.isometricCurrentForceN == null || current.isometricTelemetryStartTick == null
+        val startTick = if (startingNewAttempt) nowMillis else current.isometricTelemetryStartTick ?: nowMillis
+        val elapsedMillis = (nowMillis - startTick).coerceAtLeast(0L)
+        val peakForceN = if (startingNewAttempt) {
+            currentForceN
+        } else {
+            maxOf(current.isometricPeakForceN ?: currentForceN, currentForceN)
+        }
+
+        return IsometricTelemetry(
+            currentForceN = currentForceN,
+            peakForceN = peakForceN,
+            peakRelativeForcePercent = null,
+            elapsedMillis = elapsedMillis,
+            tick = nowMillis,
+            startTick = startTick,
+            startingNewAttempt = startingNewAttempt,
+            rawCarrierForceN = currentForceN,
+            carrierStatusPrimary = statusWord,
+            carrierStatusSecondary = null,
+        )
+    }
+
+    private fun parseExtendedModernB4IsometricTelemetry(
+        payload: ByteArray,
+        current: VoltraReading,
+        nowMillis: Long,
+    ): IsometricTelemetry? {
+        val currentForceN = payload.u16le(0).toDouble()
+        val auxPeakWord = payload.u16le(2)
+        val auxElapsedWord = payload.u16le(4)
+        val statusWord = payload.u16le(6)
+        val statusAuxWord = payload.u16le(8)
+        val trailingWord = payload.u16le(10)
+        if (currentForceN !in 0.0..MAX_REASONABLE_ISOMETRIC_FORCE_N) return null
+        if (auxPeakWord !in 0..MAX_REASONABLE_ISOMETRIC_AUX_WORD) return null
+        if (auxElapsedWord !in 0..MAX_REASONABLE_ISOMETRIC_AUX_WORD) return null
+        if (statusWord !in 0..MAX_REASONABLE_ISOMETRIC_AUX_WORD) return null
+        if (statusAuxWord !in 0..MAX_REASONABLE_ISOMETRIC_AUX_WORD) return null
+        if (trailingWord !in 0..MAX_REASONABLE_ISOMETRIC_AUX_WORD) return null
+
+        val startingNewAttempt = current.isometricCurrentForceN == null || current.isometricTelemetryStartTick == null
+        val startTick = if (startingNewAttempt) nowMillis else current.isometricTelemetryStartTick ?: nowMillis
+        val elapsedMillis = (nowMillis - startTick).coerceAtLeast(0L)
+        val peakForceN = if (startingNewAttempt) {
+            currentForceN
+        } else {
+            maxOf(current.isometricPeakForceN ?: currentForceN, currentForceN)
+        }
+
+        return IsometricTelemetry(
+            currentForceN = currentForceN,
+            peakForceN = peakForceN,
+            peakRelativeForcePercent = null,
+            elapsedMillis = elapsedMillis,
+            tick = nowMillis,
+            startTick = startTick,
+            startingNewAttempt = startingNewAttempt,
+            rawCarrierForceN = currentForceN,
+            carrierStatusPrimary = statusWord,
+            carrierStatusSecondary = statusAuxWord,
         )
     }
 
@@ -647,8 +1035,18 @@ object VoltraNotificationParser {
     private data class IsometricTelemetry(
         val currentForceN: Double?,
         val peakForceN: Double?,
+        val peakRelativeForcePercent: Double?,
         val elapsedMillis: Long?,
         val tick: Long,
         val startTick: Long?,
+        val startingNewAttempt: Boolean,
+        val rawCarrierForceN: Double?,
+        val carrierStatusPrimary: Int?,
+        val carrierStatusSecondary: Int?,
+    )
+
+    private data class IsometricWaveform(
+        val samplesN: List<Double>,
+        val lastChunkIndex: Int,
     )
 }

@@ -90,7 +90,7 @@ For every capture, record the exact steps in a small text note, keep the VOLTRA 
     - If the mode exposes metrics or another submenu, capture that separately.
 
 14. Isometric
-    - Status: Android now knows Isometric Test enters with `FITNESS_WORKOUT_STATE=8`, and the clean iPad capture showed passive reads for `ISOMETRIC_MAX_FORCE=400 lb` and `ISOMETRIC_MAX_DURATION=15 s`.
+    - Status: Android now knows Isometric Test enters with `FITNESS_WORKOUT_STATE=8`, loads from the ready screen, and can render a dedicated realtime graph with locally derived peak / RFD / impulse metrics.
     - Still needed: one clean run where the official app changes any Isometric setting that is actually user-editable, plus a short start/finish hold.
     - Still needed: a capture of any metrics-type toggle or body-weight entry if the official app exposes one.
 

@@ -460,6 +460,7 @@ class HttpGatewayServer(
                     putNullable("isokinetic_max_eccentric_load_lb", reading.isokineticMaxEccentricLoadLb)
                     putNullable("isometric_current_force_n", reading.isometricCurrentForceN)
                     putNullable("isometric_peak_force_n", reading.isometricPeakForceN)
+                    putNullable("isometric_peak_relative_force_percent", reading.isometricPeakRelativeForcePercent)
                     putNullable("isometric_elapsed_ms", reading.isometricElapsedMillis)
                     putNullable("set_count", reading.setCount)
                     putNullable("rep_count", reading.repCount)

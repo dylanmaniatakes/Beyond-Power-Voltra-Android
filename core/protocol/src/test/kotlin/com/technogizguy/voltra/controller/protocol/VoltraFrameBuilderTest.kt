@@ -2,6 +2,7 @@ package com.technogizguy.voltra.controller.protocol
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class VoltraFrameBuilderTest {
     @Test
@@ -170,6 +171,85 @@ class VoltraFrameBuilderTest {
             "551204C7AA1014002000110100065101C143",
             frame.toHexString(),
         )
+    }
+
+    @Test
+    fun buildsConfirmedOfficialRenameFrame() {
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_SET_DEVICE_NAME,
+            payload = VoltraControlFrames.setDeviceNamePayload("Dylans Voltra"),
+            seq = 0x27,
+        )
+
+        assertEquals(
+            "552204EAAA10270020004E44796C616E7320566F6C7472610000000000000000D72F",
+            frame.toHexString(),
+        )
+    }
+
+    @Test
+    fun buildsCapturedStartupImageHeaderPayloadTrailer() {
+        val payload = VoltraControlFrames.startupImageHeaderPayload(
+            imageBytes = byteArrayOf(0x01, 0x02, 0x03, 0x04),
+            chunkCount = 0x57,
+        )
+
+        assertEquals("0201FFFF00000000D002D00200000000CDFB3CB600005700", payload.toHexString())
+    }
+
+    @Test
+    fun buildsCapturedVendorStateRefreshFrame() {
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_VENDOR,
+            payload = VoltraControlFrames.vendorStateRefreshPayload(),
+            seq = 0x5C,
+        )
+
+        assertEquals("550F04A2AA105C002000AA130186F9", frame.toHexString())
+    }
+
+    @Test
+    fun buildsCapturedIsometricCablePositionReadFrame() {
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_PARAM_READ,
+            payload = VoltraControlFrames.readIsometricCablePositionPayload(),
+            seq = 0x14,
+        )
+
+        assertEquals("55130403AA10140020000F02006A50823E1E7A", frame.toHexString())
+    }
+
+    @Test
+    fun buildsCapturedIsometricArmFrame() {
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+            payload = VoltraControlFrames.loadIsometricPayload(),
+            seq = 0x16,
+        )
+
+        assertEquals("55130403AA1016002000110100893E0100E114", frame.toHexString())
+    }
+
+    @Test
+    fun buildsExtendedStartupImageChunkFrame() {
+        val chunk = ByteArray(VoltraControlFrames.STARTUP_IMAGE_CHUNK_DATA_BYTES) { index ->
+            (index and 0xFF).toByte()
+        }
+
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_STARTUP_IMAGE,
+            payload = VoltraControlFrames.startupImageChunkPayload(
+                chunkIndex = 1,
+                chunkBytes = chunk,
+            ),
+            seq = 0x13,
+        )
+
+        assertEquals(224, frame.size)
+        assertEquals(0x55.toByte(), frame[0])
+        assertEquals(0xE0.toByte(), frame[1])
+        assertEquals(0x04.toByte(), frame[2])
+        assertTrue(frame.copyOfRange(14, 14 + chunk.size).contentEquals(chunk))
     }
 
     @Test

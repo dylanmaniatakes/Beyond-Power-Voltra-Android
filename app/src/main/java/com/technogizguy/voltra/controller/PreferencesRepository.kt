@@ -8,6 +8,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.technogizguy.voltra.controller.model.WeightUnit
 import java.util.UUID
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -57,6 +59,11 @@ data class HttpGatewayPreferences(
 class PreferencesRepository(
     private val context: Context,
 ) {
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+
     val preferences: Flow<LocalPreferences> = context.voltraDataStore.data.map { prefs ->
         LocalPreferences(
             lastDeviceId = prefs[LAST_DEVICE_ID],
@@ -82,6 +89,14 @@ class PreferencesRepository(
                 accessKey = prefs[HTTP_GATEWAY_ACCESS_KEY].orEmpty(),
             ),
         )
+    }
+
+    val weightPresets: Flow<List<WeightPreset>> = context.voltraDataStore.data.map { prefs ->
+        decodeWeightPresets(prefs[WEIGHT_PRESETS_JSON])
+    }
+
+    val workoutHistory: Flow<List<WorkoutHistoryEntry>> = context.voltraDataStore.data.map { prefs ->
+        decodeWorkoutHistory(prefs[WORKOUT_HISTORY_JSON])
     }
 
     suspend fun rememberDevice(deviceId: String, deviceName: String?) {
@@ -165,6 +180,76 @@ class PreferencesRepository(
         }
     }
 
+    suspend fun upsertWeightPreset(
+        name: String,
+        scope: WeightPresetScope,
+        value: Double,
+        unit: WeightUnit,
+    ) {
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) return
+        context.voltraDataStore.edit { prefs ->
+            val current = decodeWeightPresets(prefs[WEIGHT_PRESETS_JSON])
+            val next = buildList {
+                add(
+                    WeightPreset(
+                        id = UUID.randomUUID().toString(),
+                        name = trimmedName,
+                        scope = scope,
+                        value = value,
+                        unit = unit,
+                        createdAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+                addAll(current.filterNot { it.scope == scope && it.name.equals(trimmedName, ignoreCase = true) })
+            }.take(MAX_WEIGHT_PRESETS)
+            prefs[WEIGHT_PRESETS_JSON] = json.encodeToString(ListSerializer(WeightPreset.serializer()), next)
+        }
+    }
+
+    suspend fun deleteWeightPreset(id: String) {
+        context.voltraDataStore.edit { prefs ->
+            val current = decodeWeightPresets(prefs[WEIGHT_PRESETS_JSON])
+            val next = current.filterNot { it.id == id }
+            if (next.isEmpty()) {
+                prefs.remove(WEIGHT_PRESETS_JSON)
+            } else {
+                prefs[WEIGHT_PRESETS_JSON] = json.encodeToString(ListSerializer(WeightPreset.serializer()), next)
+            }
+        }
+    }
+
+    suspend fun appendWorkoutHistory(entry: WorkoutHistoryEntry) {
+        context.voltraDataStore.edit { prefs ->
+            val current = decodeWorkoutHistory(prefs[WORKOUT_HISTORY_JSON])
+            val next = buildList {
+                add(entry)
+                addAll(current.filterNot { it.id == entry.id })
+            }.take(MAX_WORKOUT_HISTORY_ENTRIES)
+            prefs[WORKOUT_HISTORY_JSON] = json.encodeToString(ListSerializer(WorkoutHistoryEntry.serializer()), next)
+        }
+    }
+
+    suspend fun clearWorkoutHistory() {
+        context.voltraDataStore.edit { prefs ->
+            prefs.remove(WORKOUT_HISTORY_JSON)
+        }
+    }
+
+    private fun decodeWeightPresets(raw: String?): List<WeightPreset> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            json.decodeFromString(ListSerializer(WeightPreset.serializer()), raw)
+        }.getOrDefault(emptyList())
+    }
+
+    private fun decodeWorkoutHistory(raw: String?): List<WorkoutHistoryEntry> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            json.decodeFromString(ListSerializer(WorkoutHistoryEntry.serializer()), raw)
+        }.getOrDefault(emptyList())
+    }
+
     private companion object {
         val LAST_DEVICE_ID = stringPreferencesKey("last_device_id")
         val LAST_DEVICE_NAME = stringPreferencesKey("last_device_name")
@@ -184,6 +269,8 @@ class PreferencesRepository(
         val HTTP_GATEWAY_ENABLED = booleanPreferencesKey("http_gateway_enabled")
         val HTTP_GATEWAY_PORT = intPreferencesKey("http_gateway_port")
         val HTTP_GATEWAY_ACCESS_KEY = stringPreferencesKey("http_gateway_access_key")
+        val WEIGHT_PRESETS_JSON = stringPreferencesKey("weight_presets_json")
+        val WORKOUT_HISTORY_JSON = stringPreferencesKey("workout_history_json")
     }
 }
 
@@ -193,5 +280,7 @@ const val DEFAULT_MQTT_PORT = 1883
 const val DEFAULT_MQTT_TOPIC_PREFIX = "voltra_control"
 const val DEFAULT_HOME_ASSISTANT_DISCOVERY_PREFIX = "homeassistant"
 const val DEFAULT_HTTP_GATEWAY_PORT = 8788
+const val MAX_WEIGHT_PRESETS = 18
+const val MAX_WORKOUT_HISTORY_ENTRIES = 120
 
 private fun generateGatewayAccessKey(): String = UUID.randomUUID().toString().replace("-", "")
