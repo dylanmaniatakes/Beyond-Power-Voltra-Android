@@ -1906,7 +1906,7 @@ private fun DevicePersonalizationCard(
     MetricCard {
         Text("Device Personalization", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         Text(
-            "Set the VOLTRA name and upload a startup image from your phone.",
+            "Set the VOLTRA name from your phone. Startup image work is still in development.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1955,14 +1955,14 @@ private fun DevicePersonalizationCard(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                     )
                 },
-                enabled = isConnected,
+                enabled = false,
                 modifier = Modifier.weight(1f),
             ) {
-                Text("Startup Image")
+                Text("Startup Image (In Development)")
             }
         }
         Text(
-            "Startup images are center-cropped, resized to 720 x 720, and sent directly to the VOLTRA.",
+            "Startup image upload is still in development.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
