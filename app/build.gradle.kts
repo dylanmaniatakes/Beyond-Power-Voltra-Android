@@ -39,8 +39,8 @@ android {
         applicationId = "com.technogizguy.voltra.controller"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 106
-        versionName = "1.4.1"
+        versionCode = 107
+        versionName = "1.4.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

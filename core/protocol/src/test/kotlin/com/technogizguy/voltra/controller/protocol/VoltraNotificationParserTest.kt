@@ -77,6 +77,72 @@ class VoltraNotificationParserTest {
     }
 
     @Test
+    fun extractsIsometricBodyWeightAndMetricsTypeFromParamUpdates() {
+        val withBodyWeight = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(),
+            value = VoltraFrameBuilder.build(
+                cmd = 0x10,
+                payload = byteArrayOf(
+                    0x01,
+                    0x00,
+                    0x5A,
+                    0x53,
+                    0xDF.toByte(),
+                    0x02,
+                    0x00,
+                    0x00,
+                ),
+                seq = 3,
+            ),
+            nowMillis = 4600L,
+        )
+        val withMirrors = VoltraNotificationParser.mergeReading(
+            current = withBodyWeight,
+            value = VoltraFrameBuilder.build(
+                cmd = 0x10,
+                payload = byteArrayOf(
+                    0x03,
+                    0x00,
+                    0x5B,
+                    0x53,
+                    0xF6.toByte(),
+                    0x02,
+                    0x5C,
+                    0x53,
+                    0xA6.toByte(),
+                    0x00,
+                    0xD1.toByte(),
+                    0x53,
+                    0x00,
+                ),
+                seq = 4,
+            ),
+            nowMillis = 4700L,
+        )
+
+        assertEquals(735.0, withMirrors.isometricBodyWeightN)
+        assertEquals(758, withMirrors.isometricBodyWeight100g)
+        assertEquals(166.0, withMirrors.isometricBodyWeightLb)
+        assertEquals(0, withMirrors.isometricMetricsType)
+        assertEquals(4700L, withMirrors.lastUpdatedMillis)
+    }
+
+    @Test
+    fun derivesIsometricPeakRelativeForceFromBodyWeightWhenDeviceOmitsIt() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                isometricBodyWeightN = 735.0,
+                isometricMetricsType = 0,
+            ),
+            value = "551504A910AA83490000B42000020000003200DCBE".hexToByteArray(),
+            nowMillis = 4750L,
+        )
+
+        assertEquals(lbToNewtons(32.0), reading.isometricPeakForceN!!, 0.1)
+        assertEquals(19.3, reading.isometricPeakRelativeForcePercent!!, 0.1)
+    }
+
+    @Test
     fun extractsTargetWeightAndWorkoutModeFromCapturedStateUpdate() {
         val reading = VoltraNotificationParser.mergeReading(
             current = VoltraReading(activationState = "Activated"),
@@ -235,6 +301,108 @@ class VoltraNotificationParserTest {
 
         assertEquals("Isometric Test, Ready", reading.workoutMode)
         assertEquals(6279L, reading.lastUpdatedMillis)
+    }
+
+    @Test
+    fun labelsCustomCurveWorkoutStateFromCapturedPresetSequence() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(),
+            value = VoltraFrameBuilder.build(
+                cmd = 0x10,
+                payload = "0200893E0400B04F06".hexToByteArray(),
+                seq = 0x32,
+            ),
+            nowMillis = 6281L,
+        )
+
+        assertEquals("Custom Curve, Ready", reading.workoutMode)
+        assertEquals(6281L, reading.lastUpdatedMillis)
+    }
+
+    @Test
+    fun exposesSharedRowAndIsometricScreenStateWithoutRelabeling() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(),
+            value = "551D04DF10AA930B2000100400893E8500B04F081150396754080148CC"
+                .hexToByteArray(),
+            nowMillis = 6282L,
+        )
+
+        assertEquals("Isometric Test, Loaded", reading.workoutMode)
+        assertEquals(VoltraControlFrames.ROWING_SCREEN_ID, reading.appCurrentScreenId)
+        assertEquals(VoltraControlFrames.ROWING_ONGOING_UI, reading.fitnessOngoingUi)
+        assertEquals(6282L, reading.lastUpdatedMillis)
+    }
+
+    @Test
+    fun doesNotParseCustomCurveVendorStatusAsIsometricTelemetry() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(workoutMode = "Custom Curve, Loaded"),
+            value = "553404AC10AA24082000AA80250600055E0100000000000008005B00000000000000050300010000640001EC020000000000E936"
+                .hexToByteArray(),
+            nowMillis = 6283L,
+        )
+
+        assertNull(reading.isometricCurrentForceN)
+        assertNull(reading.isometricPeakForceN)
+        assertNull(reading.isometricElapsedMillis)
+        assertTrue(reading.isometricWaveformSamplesN.isEmpty())
+        assertEquals(35.0, reading.forceLb!!, 0.1)
+        assertEquals("Pull", reading.repPhase)
+        assertEquals("Custom Curve, Loaded", reading.workoutMode)
+    }
+
+    @Test
+    fun extractsCustomCurveLiveStatsFromB4Stream() {
+        val pull = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Custom Curve, Loaded",
+                weightLb = 5.0,
+                repCount = 0,
+                repPhase = "Ready",
+            ),
+            value = VoltraFrameBuilder.build(
+                cmd = 0xB4,
+                payload = byteArrayOf(
+                    0xF6.toByte(),
+                    0x00,
+                    0x74,
+                    0x03,
+                    0x06,
+                    0x00,
+                    0xF6.toByte(),
+                    0x00,
+                ),
+                seq = 0x40,
+            ),
+            nowMillis = 6284L,
+        )
+        val ready = VoltraNotificationParser.mergeReading(
+            current = pull,
+            value = VoltraFrameBuilder.build(
+                cmd = 0xB4,
+                payload = byteArrayOf(
+                    0x32,
+                    0x00,
+                    0x03,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x32,
+                    0x00,
+                ),
+                seq = 0x41,
+            ),
+            nowMillis = 6285L,
+        )
+
+        assertEquals(24.6, pull.forceLb!!, 0.1)
+        assertEquals("Pull", pull.repPhase)
+        assertEquals(0, pull.repCount)
+        assertEquals(5.0, ready.forceLb!!, 0.1)
+        assertEquals("Ready", ready.repPhase)
+        assertEquals(1, ready.repCount)
+        assertEquals(1, ready.setCount)
     }
 
     @Test

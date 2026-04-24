@@ -1,0 +1,17 @@
+--------- beginning of system
+04-24 14:03:19.281 I/DisplayManager(19077): Choreographer implicitly registered for the refresh rate.
+04-24 14:03:19.678 D/InsetsController(19077): hide(ime())
+--------- beginning of main
+04-24 14:05:45.667 D/VoltraIsoDebug(19077): dir=NOTIFY char=55CA1E52-7354-25DE-6AFC-B7DF1E8816AC cmd=0xaa p0=0x80 mode=5 workout=6 loaded=true force=101.0 peak=389.0 rel=null elapsed=8463 samples=342 carrier=101.0 carrierP=2 carrierS=null hex=553404AC10AA24082000AA80250600055E0100000000000008005B00000000000000050300010000640001EC020000000000E936 vendorWords=2580,0006,5E05,0001,0000,0000,0800,5B00,0000,0000,0000,0500,0003,0001,6400,0100,02EC,0000,0000,00
+04-24 14:05:45.671 D/VoltraIsoDebug(19077): dir=NOTIFY char=55CA1E52-7354-25DE-6AFC-B7DF1E8816AC cmd=0xaa p0=0x80 mode=5 workout=6 loaded=true force=101.0 peak=389.0 rel=null elapsed=8463 samples=342 carrier=101.0 carrierP=2 carrierS=null hex=553404AC10AA25082000AA8025000000000000000000000008005B00000000000000050300010000640001EC02000000000065DB vendorWords=2580,0000,0000,0000,0000,0000,0800,5B00,0000,0000,0000,0500,0003,0001,6400,0100,02EC,0000,0000,00
+04-24 14:05:45.675 D/VoltraIsoDebug(19077): dir=NOTIFY char=55CA1E52-7354-25DE-6AFC-B7DF1E8816AC cmd=0xaa p0=0x80 mode=5 workout=6 loaded=true force=101.0 peak=389.0 rel=null elapsed=8463 samples=342 carrier=101.0 carrierP=2 carrierS=null hex=553404AC10AA26082000AA8025000000000000000000000000005B00000000000000050300010000640001EC0200000000005B09 vendorWords=2580,0000,0000,0000,0000,0000,0000,5B00,0000,0000,0000,0500,0003,0001,6400,0100,02EC,0000,0000,00
+04-24 14:05:49.549 D/ViewRootImpl(19077): Skipping stats log for color mode
+04-24 14:05:49.550 D/WindowOnBackDispatcher(19077): setTopOnBackInvokedCallback (unwrapped): androidx.navigationevent.OnBackInvokedInput$createOnBackAnimationCallback$1@f4562c0
+04-24 14:05:49.652 D/VoltraIsoDebug(19077): command=ENTER_CUSTOM_CURVE_MODE status=QUEUED msg=Queued apply captured Custom Curve preset frames (6 total, last len=65 bytes).
+04-24 14:05:49.686 D/InsetsController(19077): hide(ime())
+04-24 14:05:49.686 I/ImeTracker(19077): com.technogizguy.voltra.controller:c54695c6: onCancelled at PHASE_CLIENT_ALREADY_HIDDEN
+04-24 14:05:50.568 D/VoltraIsoDebug(19077): dir=WRITE char=A010891D-F50F-44F0-901F-9A2421A9E050 cmd=0x11 p0=0x1 mode=4 workout=6 loaded=false force=null peak=null rel=null elapsed=null samples=0 carrier=null carrierP=null carrierS=null hex=551204C7AA101A002000110100B04F069FE5
+04-24 14:05:50.819 D/VoltraIsoDebug(19077): command=ENTER_CUSTOM_CURVE_MODE status=QUEUED msg=Custom Curve entry is already queued.
+04-24 14:05:51.016 D/VoltraIsoDebug(19077): command=ENTER_CUSTOM_CURVE_MODE status=SENT msg=Write queue empty. Watch for VOLTRA notifications.
+04-24 14:06:19.637 D/VRI[MainActivity](19077): visibilityChanged oldVisibility=true newVisibility=false
+04-24 14:06:19.657 D/WindowOnBackDispatcher(19077): setTopOnBackInvokedCallback (unwrapped): android.app.Activity$$ExternalSyntheticLambda0@306f99a

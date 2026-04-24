@@ -40,7 +40,7 @@ Status key:
 | Inverse Chains independence | Needs capture | This still needs stronger proof that the on/off state and amount are fully independent from regular Chains. Clean official-app captures are still the key blocker. |
 | Eccentric overload edge cases | Polish | Positive and negative ranges are exposed, but we still want more confidence near the device clamps and minimum return load behavior. |
 | Resistance Band advanced settings parity | Polish | Experience, Standard/Inverse, Progressive Length, Curve, and Band Length are all in play now; keep reporting anything that reads correctly but does not actually set on the unit. |
-| Custom Curve apply/edit flow | Needs capture | The mode exists in the app, but curve editing and applying still need cleaner isolated captures before it should be promoted beyond under-development status. |
+| Custom Curve apply/edit flow | Alpha | Alpha 1.4.5 adds a four-point graph/sliders builder with local save/load presets. Keep testing how edited curves feel against the VOLTRA. |
 | Local workout history | Planned | The app now has enough live state to start recording local sessions once the telemetry edges are a little calmer. |
 | Workout export as CSV | Planned | This should land right after local history so the export columns can match the stored session shape. |
 | Weight presets | Planned | No capture blocker. This is mostly a product-shape decision once the weight/settings editors feel final. |
@@ -69,7 +69,7 @@ Status key:
 
 ## Developer / Under Development
 
-- Custom Curve remains under development even though the tile exists.
+- Custom Curve is active in alpha form; treat the four-point graph builder as experimental until more official-app editor captures are mapped.
 - Rowing should stay hidden behind developer-only paths until we have clean captures and a safe control model.
 - Protocol expansion should continue to follow captured evidence, not guessed commands.
 
@@ -77,6 +77,6 @@ Status key:
 
 1. Isometric: arm/load, one short pull, unload, with a note about what the iPad shows for current force, peak force, and timer.
 2. Inverse Chains: clean off/on and amount changes with regular Chains left at zero, then one repeat with regular Chains nonzero.
-3. Custom Curve: select one saved curve, edit a single point, save, apply, do one rep, export immediately.
+3. Custom Curve: compare an edited Android curve against the iPad curve editor, then export immediately after applying/loading.
 4. kg mode outside Weight Training: a clean official-app pass in Resistance Band and one advanced editor while the app is set to kg.
 5. Any mismatch between app state and device state: export right after the mismatch while the screen is still visible.

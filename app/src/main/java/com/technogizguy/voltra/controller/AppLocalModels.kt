@@ -20,6 +20,17 @@ data class WeightPreset(
 )
 
 @Serializable
+data class CustomCurvePreset(
+    val id: String,
+    val name: String,
+    val points: List<Float>,
+    val resistanceMinLb: Int = 5,
+    val resistanceLimitLb: Int = 100,
+    val rangeOfMotionIn: Int = 117,
+    val createdAtMillis: Long,
+)
+
+@Serializable
 data class WorkoutHistoryEntry(
     val id: String,
     val startedAtMillis: Long,

@@ -1,5 +1,7 @@
 package com.technogizguy.voltra.controller.protocol
 
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -194,7 +196,7 @@ class VoltraFrameBuilderTest {
             chunkCount = 0x57,
         )
 
-        assertEquals("0201FFFF00000000D002D00200000000CDFB3CB600005700", payload.toHexString())
+        assertEquals("0201FFFF00000000D002D00200000000CDFB3CB602005700", payload.toHexString())
     }
 
     @Test
@@ -228,6 +230,126 @@ class VoltraFrameBuilderTest {
         )
 
         assertEquals("55130403AA1016002000110100893E0100E114", frame.toHexString())
+    }
+
+    @Test
+    fun buildsCapturedCustomCurveEnterFrame() {
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+            payload = VoltraControlFrames.enterCustomCurvePayload(),
+            seq = 0x14,
+        )
+
+        assertEquals("551204C7AA1014002000110100B04F066464", frame.toHexString())
+    }
+
+    @Test
+    fun buildsCapturedCustomCurveNotifySubscribeFrame() {
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+            payload = VoltraControlFrames.setFitnessDataNotifySubscribePayload(),
+            seq = 0x07,
+        )
+
+        assertEquals("551504A9AA10070020001101008351F57B65001D85", frame.toHexString())
+    }
+
+    @Test
+    fun buildsCapturedCustomCurveNotifyHzFrame() {
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+            payload = VoltraControlFrames.setFitnessDataNotifyHzPayload(),
+            seq = 0x09,
+        )
+
+        assertEquals("551204C7AA10090020001101008251284FB7", frame.toHexString())
+    }
+
+    @Test
+    fun buildsCapturedCustomCurveVendorPresetFrame() {
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_VENDOR,
+            payload = VoltraControlFrames.customCurveVendorPresetPayload(),
+            seq = 0x13,
+        )
+
+        assertEquals(
+            "55550432AA1013002000AA06020000920464006405E64E9CEA0300000000000000004C172D3EEFE3FC3D4C17AD3EEFE37C3E5136013F4DC7D33E0DFBE02B3F518E143F7EF0553F29474A3F0000803F0000803F018F",
+            frame.toHexString(),
+        )
+    }
+
+    @Test
+    fun buildsEditableCustomCurveVendorPresetPayload() {
+        val payload = VoltraControlFrames.customCurveVendorPresetPayload(
+            listOf(0.25f, 0.35f, 0.45f, 0.55f),
+        )
+
+        assertEquals(
+            "06020000920464006405E64E9CEA0300000000000000004C172D3E3433733E4C17AD3EDEDD8D3E5136013F2322A23E0DFBE02B3F6666B63E7EF0553FABAACA3E0000803FF0EEDE3E",
+            payload.toHexString(),
+        )
+    }
+
+    @Test
+    fun buildsEditableCustomCurveVendorPresetPayloadWithResistanceAndRangeOfMotion() {
+        val payload = VoltraControlFrames.customCurveVendorPresetPayload(
+            points = listOf(0.25f, 0.35f, 0.45f, 0.55f),
+            resistanceMinLb = 25,
+            resistanceLimitLb = 150,
+            rangeOfMotionIn = 80,
+        )
+
+        assertEquals(
+            "06020000200396009619E64E9CEA0300000000000000004C172D3E0000A03E4C17AD3EAAAABA3E5136013F5555D53E0DFBE02B3FFFFFEF3E7EF0553F5555053F0000803FABAA123F",
+            payload.toHexString(),
+        )
+    }
+
+    @Test
+    fun scalesCustomCurveWireValuesToResistanceLimit() {
+        val payload = VoltraControlFrames.customCurveVendorPresetPayload(
+            resistanceMinLb = 5,
+            resistanceLimitLb = 25,
+        )
+
+        val finalWireY = ByteBuffer
+            .wrap(payload, payload.size - 4, 4)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .float
+
+        assertEquals("06020000920419001905", payload.take(10).toByteArray().toHexString())
+        assertEquals(0.16666667f, finalWireY, 0.0001f)
+    }
+
+    @Test
+    fun capsCustomCurveWireRangeOfMotionAtCapturedIpadCeiling() {
+        val payload = VoltraControlFrames.customCurveVendorPresetPayload(
+            rangeOfMotionIn = VoltraControlFrames.MAX_CUSTOM_CURVE_RANGE_OF_MOTION_IN,
+        )
+
+        assertEquals("9204", payload.copyOfRange(4, 6).toHexString())
+    }
+
+    @Test
+    fun buildsCustomCurveMaxAllowedForcePayload() {
+        val payload = VoltraControlFrames.setMaxAllowedForcePayload(150)
+
+        assertEquals("010014539600", payload.toHexString())
+    }
+
+    @Test
+    fun buildsCapturedCustomCurveBulkSubscribeFrame() {
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_BULK_PARAM_WRITE,
+            payload = VoltraControlFrames.customCurveBulkSubscribePayload(),
+            seq = 0x08,
+        )
+
+        assertEquals(
+            "55D304B7AA1008002000AF024100B04F015053018153015153016E50017F5301A85101C45301115401883E01A75301065101645301853E01315401CF5301145401873E016A5001825201155401E14E01835101DE5401525301823E01675401863E015553018C5401E552012D4E011150011853015B53011353010F5401D25301245101195301893E01035101B653014154018B5401AE53016F5001625301B05301C95301C85301DF54010F5201025101145301B75301C75301125401215401C65301D45401C553018D53011354011054017566",
+            frame.toHexString(),
+        )
     }
 
     @Test

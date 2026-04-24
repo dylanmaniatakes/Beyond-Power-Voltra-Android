@@ -83,6 +83,8 @@ object VoltraNotificationParser {
             }
         }
         val weightTrainingExtraMode = params.uint8(PARAM_WEIGHT_TRAINING_EXTRA_MODE)
+        val appCurrentScreenId = params.uint8(PARAM_APP_CUR_SCR_ID)
+        val fitnessOngoingUi = params.uint16(PARAM_FITNESS_ONGOING_UI)
         val isokineticMode = params.uint8(PARAM_ISOKINETIC_ECC_MODE)
         val isokineticTargetSpeedMmS = params.uint32(PARAM_EP_ISOKINETIC_TARGET_SPEED_MM_S)
         val isokineticSpeedLimitMmS = params.uint16(PARAM_ISOKINETIC_ECC_SPEED_LIMIT)
@@ -90,15 +92,39 @@ object VoltraNotificationParser {
         val isokineticMaxEccentricLoadLb = params.uint16(PARAM_ISOKINETIC_ECC_OVERLOAD_WEIGHT)?.toDouble()
         val isometricMaxForceLb = params.uint16(PARAM_ISOMETRIC_MAX_FORCE)?.toDouble()
         val isometricMaxDurationSeconds = params.uint16(PARAM_ISOMETRIC_MAX_DURATION)
+        val isometricMetricsType = params.uint8(PARAM_ISOMETRIC_METRICS_TYPE)
+        val isometricBodyWeightN = params.uint32(PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_N)?.toDouble()
+        val isometricBodyWeight100g = params.uint16(PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_100G)
+        val isometricBodyWeightLb = params.uint16(PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_LBS)?.toDouble()
         val fitnessMode = params.uint16(PARAM_BP_SET_FITNESS_MODE)
         val workoutState = params.uint8(PARAM_FITNESS_WORKOUT_STATE)
-        val isometricTelemetry = parseIsometricTelemetry(packet, current, nowMillis)
-        val isometricWaveform = parseIsometricWaveform(packet, current)
+        val currentWasInIsometric = current.workoutMode?.startsWith("Isometric Test") == true
+        val currentWasInCustomCurve = current.workoutMode?.startsWith("Custom Curve") == true
+        val currentModeIsKnownNonIsometric = current.workoutMode != null && !currentWasInIsometric
+        val packetIsIsometric = workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ||
+            (workoutState == null && !currentModeIsKnownNonIsometric)
+        val packetIsCustomCurve = workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE ||
+            (workoutState == null && currentWasInCustomCurve)
+        val isometricTelemetry = if (packetIsIsometric) {
+            parseIsometricTelemetry(packet, current, nowMillis)
+        } else {
+            null
+        }
+        val isometricWaveform = if (packetIsIsometric) {
+            parseIsometricWaveform(packet, current)
+        } else {
+            null
+        }
         val workoutMode = workoutModeLabel(
             mode = fitnessMode,
             workoutState = workoutState,
         )
         val repTelemetry = parseRepTelemetry(packet)
+        val customCurveTelemetry = if (packetIsCustomCurve) {
+            parseCustomCurveTelemetry(packet, current)
+        } else {
+            null
+        }
 
         if (
             serial == null &&
@@ -122,6 +148,8 @@ object VoltraNotificationParser {
             damperLevelIndex == null &&
             assistModeEnabled == null &&
             weightTrainingExtraMode == null &&
+            appCurrentScreenId == null &&
+            fitnessOngoingUi == null &&
             isokineticMode == null &&
             isokineticTargetSpeedMmS == null &&
             isokineticSpeedLimitMmS == null &&
@@ -129,16 +157,20 @@ object VoltraNotificationParser {
             isokineticMaxEccentricLoadLb == null &&
             isometricMaxForceLb == null &&
             isometricMaxDurationSeconds == null &&
+            isometricMetricsType == null &&
+            isometricBodyWeightN == null &&
+            isometricBodyWeight100g == null &&
+            isometricBodyWeightLb == null &&
             isometricTelemetry == null &&
             isometricWaveform == null &&
             workoutMode == null &&
-            repTelemetry == null
+            repTelemetry == null &&
+            customCurveTelemetry == null
         ) {
             return current
         }
 
         val leavingIsometric = workoutState != null && workoutState != VoltraControlFrames.WORKOUT_STATE_ISOMETRIC
-        val currentWasInIsometric = current.workoutMode?.startsWith("Isometric Test") == true
         val retainCompletedIsometricAttempt = current.isometricWaveformSamplesN.isNotEmpty() ||
             current.isometricPeakRelativeForcePercent != null
         val hasCollectedIsometricLiveSample = current.isometricWaveformSamplesN.isNotEmpty() ||
@@ -211,6 +243,33 @@ object VoltraNotificationParser {
             isometricTelemetry?.startingNewAttempt == true -> null
             else -> current.isometricWaveformLastChunkIndex
         }
+        val mergedIsometricMetricsType = isometricMetricsType ?: current.isometricMetricsType
+        val mergedIsometricBodyWeightN = isometricBodyWeightN ?: current.isometricBodyWeightN
+        val mergedIsometricBodyWeight100g = isometricBodyWeight100g ?: current.isometricBodyWeight100g
+        val mergedIsometricBodyWeightLb = isometricBodyWeightLb ?: current.isometricBodyWeightLb
+        val mergedIsometricPeakForceN = when {
+            enteringFreshIsometricScreen -> null
+            leavingIsometric && retainCompletedIsometricAttempt -> current.isometricPeakForceN
+            leavingIsometric -> null
+            isometricTelemetry?.peakForceN != null -> isometricTelemetry.peakForceN
+            isometricTelemetry != null -> if (hasCollectedIsometricLiveSample) current.isometricPeakForceN else null
+            else -> current.isometricPeakForceN
+        }
+        val mergedIsometricPeakRelativeForcePercent = when {
+            enteringFreshIsometricScreen -> null
+            leavingIsometric && retainCompletedIsometricAttempt -> current.isometricPeakRelativeForcePercent
+            leavingIsometric -> null
+            isometricTelemetry != null -> when {
+                isometricTelemetry.startingNewAttempt -> isometricTelemetry.peakRelativeForcePercent
+                isometricTelemetry.peakRelativeForcePercent != null -> isometricTelemetry.peakRelativeForcePercent
+                else -> current.isometricPeakRelativeForcePercent
+            }
+            else -> current.isometricPeakRelativeForcePercent
+        } ?: deriveIsometricPeakRelativeForcePercent(
+            peakForceN = mergedIsometricPeakForceN,
+            bodyWeightN = mergedIsometricBodyWeightN,
+            metricsType = mergedIsometricMetricsType,
+        )
 
         return current.copy(
             serialNumber = serial ?: current.serialNumber,
@@ -219,7 +278,7 @@ object VoltraNotificationParser {
             activationState = activationState ?: current.activationState,
             cableLengthCm = cableLengthCm ?: current.cableLengthCm,
             cableOffsetCm = cableOffsetCm ?: current.cableOffsetCm,
-            forceLb = wireWeightLb ?: current.forceLb,
+            forceLb = customCurveTelemetry?.forceLb ?: wireWeightLb ?: current.forceLb,
             weightLb = baseWeightLb ?: current.weightLb,
             resistanceBandMaxForceLb = resistanceBandMaxForceLb ?: current.resistanceBandMaxForceLb,
             resistanceBandLengthCm = resistanceBandLengthCm ?: current.resistanceBandLengthCm,
@@ -231,6 +290,8 @@ object VoltraNotificationParser {
             damperLevelIndex = damperLevelIndex ?: current.damperLevelIndex,
             assistModeEnabled = assistModeEnabled ?: current.assistModeEnabled,
             weightTrainingExtraMode = weightTrainingExtraMode ?: current.weightTrainingExtraMode,
+            appCurrentScreenId = appCurrentScreenId ?: current.appCurrentScreenId,
+            fitnessOngoingUi = fitnessOngoingUi ?: current.fitnessOngoingUi,
             chainsWeightLb = chainsWeightLb ?: current.chainsWeightLb,
             eccentricWeightLb = eccentricWeightLb ?: current.eccentricWeightLb,
             inverseChains = inverseChains ?: current.inverseChains,
@@ -241,6 +302,10 @@ object VoltraNotificationParser {
             isokineticMaxEccentricLoadLb = isokineticMaxEccentricLoadLb ?: current.isokineticMaxEccentricLoadLb,
             isometricMaxForceLb = isometricMaxForceLb ?: current.isometricMaxForceLb,
             isometricMaxDurationSeconds = isometricMaxDurationSeconds ?: current.isometricMaxDurationSeconds,
+            isometricMetricsType = mergedIsometricMetricsType,
+            isometricBodyWeightN = mergedIsometricBodyWeightN,
+            isometricBodyWeight100g = mergedIsometricBodyWeight100g,
+            isometricBodyWeightLb = mergedIsometricBodyWeightLb,
             isometricCurrentForceN = when {
                 enteringFreshIsometricScreen -> null
                 leavingIsometric -> null
@@ -250,25 +315,8 @@ object VoltraNotificationParser {
                 isometricTelemetry != null -> if (hasCollectedIsometricLiveSample) current.isometricCurrentForceN else null
                 else -> current.isometricCurrentForceN
             },
-            isometricPeakForceN = when {
-                enteringFreshIsometricScreen -> null
-                leavingIsometric && retainCompletedIsometricAttempt -> current.isometricPeakForceN
-                leavingIsometric -> null
-                isometricTelemetry?.peakForceN != null -> isometricTelemetry.peakForceN
-                isometricTelemetry != null -> if (hasCollectedIsometricLiveSample) current.isometricPeakForceN else null
-                else -> current.isometricPeakForceN
-            },
-            isometricPeakRelativeForcePercent = when {
-                enteringFreshIsometricScreen -> null
-                leavingIsometric && retainCompletedIsometricAttempt -> current.isometricPeakRelativeForcePercent
-                leavingIsometric -> null
-                isometricTelemetry != null -> when {
-                    isometricTelemetry.startingNewAttempt -> isometricTelemetry.peakRelativeForcePercent
-                    isometricTelemetry.peakRelativeForcePercent != null -> isometricTelemetry.peakRelativeForcePercent
-                    else -> current.isometricPeakRelativeForcePercent
-                }
-                else -> current.isometricPeakRelativeForcePercent
-            },
+            isometricPeakForceN = mergedIsometricPeakForceN,
+            isometricPeakRelativeForcePercent = mergedIsometricPeakRelativeForcePercent,
             isometricElapsedMillis = when {
                 enteringFreshIsometricScreen -> null
                 leavingIsometric && retainCompletedIsometricAttempt -> current.isometricElapsedMillis
@@ -309,9 +357,9 @@ object VoltraNotificationParser {
             },
             isometricWaveformSamplesN = isometricWaveformSamples,
             isometricWaveformLastChunkIndex = isometricWaveformLastChunkIndex,
-            setCount = repTelemetry?.setCount ?: current.setCount,
-            repCount = repTelemetry?.count ?: current.repCount,
-            repPhase = repTelemetry?.phase ?: current.repPhase,
+            setCount = customCurveTelemetry?.setCount ?: repTelemetry?.setCount ?: current.setCount,
+            repCount = customCurveTelemetry?.repCount ?: repTelemetry?.count ?: current.repCount,
+            repPhase = customCurveTelemetry?.phase ?: repTelemetry?.phase ?: current.repPhase,
             workoutMode = workoutMode ?: current.workoutMode,
             lastUpdatedMillis = nowMillis,
         )
@@ -439,6 +487,8 @@ object VoltraNotificationParser {
     private const val PARAM_FITNESS_WORKOUT_STATE = VoltraControlFrames.PARAM_FITNESS_WORKOUT_STATE
     private const val PARAM_FITNESS_DAMPER_RATIO_IDX = VoltraControlFrames.PARAM_FITNESS_DAMPER_RATIO_IDX
     private const val PARAM_FITNESS_ASSIST_MODE = VoltraControlFrames.PARAM_FITNESS_ASSIST_MODE
+    private const val PARAM_APP_CUR_SCR_ID = VoltraControlFrames.PARAM_APP_CUR_SCR_ID
+    private const val PARAM_FITNESS_ONGOING_UI = VoltraControlFrames.PARAM_FITNESS_ONGOING_UI
     private const val PARAM_FITNESS_INVERSE_CHAIN = VoltraControlFrames.PARAM_FITNESS_INVERSE_CHAIN
     private const val PARAM_RESISTANCE_BAND_MAX_FORCE = VoltraControlFrames.PARAM_RESISTANCE_BAND_MAX_FORCE
     private const val PARAM_RESISTANCE_BAND_LEN = VoltraControlFrames.PARAM_RESISTANCE_BAND_LEN
@@ -448,11 +498,15 @@ object VoltraNotificationParser {
     private const val PARAM_EP_RESISTANCE_BAND_INVERSE = VoltraControlFrames.PARAM_EP_RESISTANCE_BAND_INVERSE
     private const val PARAM_QUICK_CABLE_ADJUSTMENT = VoltraControlFrames.PARAM_QUICK_CABLE_ADJUSTMENT
     private const val PARAM_WEIGHT_TRAINING_EXTRA_MODE = VoltraControlFrames.PARAM_WEIGHT_TRAINING_EXTRA_MODE
+    private const val PARAM_ISOMETRIC_METRICS_TYPE = VoltraControlFrames.PARAM_ISOMETRIC_METRICS_TYPE
     private const val PARAM_ISOKINETIC_ECC_MODE = VoltraControlFrames.PARAM_ISOKINETIC_ECC_MODE
     private const val PARAM_EP_ISOKINETIC_TARGET_SPEED_MM_S = VoltraControlFrames.PARAM_EP_ISOKINETIC_TARGET_SPEED_MM_S
     private const val PARAM_ISOKINETIC_ECC_SPEED_LIMIT = VoltraControlFrames.PARAM_ISOKINETIC_ECC_SPEED_LIMIT
     private const val PARAM_ISOKINETIC_ECC_CONST_WEIGHT = VoltraControlFrames.PARAM_ISOKINETIC_ECC_CONST_WEIGHT
     private const val PARAM_ISOKINETIC_ECC_OVERLOAD_WEIGHT = VoltraControlFrames.PARAM_ISOKINETIC_ECC_OVERLOAD_WEIGHT
+    private const val PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_N = VoltraControlFrames.PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_N
+    private const val PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_100G = VoltraControlFrames.PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_100G
+    private const val PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_LBS = VoltraControlFrames.PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_LBS
     private const val PARAM_ISOMETRIC_MAX_DURATION = VoltraControlFrames.PARAM_ISOMETRIC_MAX_DURATION
     private const val PARAM_ISOMETRIC_MAX_FORCE = VoltraControlFrames.PARAM_ISOMETRIC_MAX_FORCE
     private const val BULK_RESPONSE_MIN_PARAM_BYTES = 5
@@ -485,8 +539,19 @@ object VoltraNotificationParser {
     private const val TELEMETRY_ISOMETRIC_SUMMARY_PEAK_RELATIVE_FORCE_OFFSET = 29
     private const val TELEMETRY_ISOMETRIC_SUMMARY_DURATION_SECONDS_OFFSET = 33
     private const val TELEMETRY_ISOMETRIC_WAVEFORM_TYPE = 0x93
+    private const val CUSTOM_CURVE_B4_SHORT_BYTES = 8
+    private const val CUSTOM_CURVE_B4_EXTENDED_BYTES = 12
+    private const val CUSTOM_CURVE_B4_FORCE_MIRROR_TOLERANCE_TENTHS_LB = 2
+    private const val CUSTOM_CURVE_VENDOR_STATUS_BYTES = 39
+    private const val CUSTOM_CURVE_VENDOR_FORCE_OFFSET = 5
+    private const val CUSTOM_CURVE_FORCE_TENTHS_PER_LB = 10.0
+    private const val CUSTOM_CURVE_REP_ACTIVE_MARGIN_LB = 3.0
+    private const val CUSTOM_CURVE_REP_ACTIVE_MULTIPLIER = 1.2
+    private const val CUSTOM_CURVE_REP_RESET_MARGIN_LB = 1.0
+    private const val CUSTOM_CURVE_REP_DIRECTION_DEADBAND_LB = 0.4
     private const val MAX_REASONABLE_SET_COUNT = 1_000
     private const val MAX_REASONABLE_REP_COUNT = 10_000
+    private const val MAX_REASONABLE_CUSTOM_CURVE_FORCE_TENTHS_LB = 2_000
     private const val ISOMETRIC_SAMPLE_RATE_MIN = 40
     private const val ISOMETRIC_SAMPLE_RATE_MAX = 60
     private const val MAX_REASONABLE_ISOMETRIC_DURATION_SECONDS = 60
@@ -494,6 +559,9 @@ object VoltraNotificationParser {
     private const val MAX_REASONABLE_ISOMETRIC_FORCE_LB = 450
     private const val MAX_REASONABLE_ISOMETRIC_FORCE_N = 2_000.0
     private const val MAX_REASONABLE_ISOMETRIC_GRAPH_FORCE_N = 2_000.0
+    private const val MIN_REASONABLE_ISOMETRIC_BODY_WEIGHT_N = 100.0
+    private const val MAX_REASONABLE_ISOMETRIC_BODY_WEIGHT_N = 5_000.0
+    private const val ISOMETRIC_METRICS_TYPE_FORCE = 0
     private const val MAX_REASONABLE_ISOMETRIC_STATUS_WORD = 0x0200
     private const val MAX_REASONABLE_ISOMETRIC_AUX_WORD = 4_000
     private const val MAX_SUMMARY_RECONCILIATION_SPARSE_SAMPLES = 16
@@ -511,6 +579,7 @@ object VoltraNotificationParser {
     private val LEGACY_ISOMETRIC_STREAM_VARIANTS = setOf(1, 2, 3)
     private val TELEMETRY_ISOMETRIC_COARSE_LIVE_FORCE_RANGE_N = 1.0..MAX_REASONABLE_ISOMETRIC_FORCE_N
     private val TELEMETRY_ISOMETRIC_WAVEFORM_MARKERS = setOf(0xCC, 0x82, 0xA8)
+    private val CUSTOM_CURVE_ACTIVE_PHASES = setOf("Pull", "Return")
 
     private fun ParsedVoltraPacket.decodeParams(): Map<Int, Number> {
         if (commandId != CMD_ASYNC_STATE && commandId != CMD_BULK_REGISTER) return emptyMap()
@@ -545,12 +614,16 @@ object VoltraNotificationParser {
         return if (possibleFirstParamId in VoltraParamRegistry.byId) 1 else 0
     }
 
-    private fun workoutModeLabel(mode: Int?, workoutState: Int?): String? {
+    private fun workoutModeLabel(
+        mode: Int?,
+        workoutState: Int?,
+    ): String? {
         if (mode == null && workoutState == null) return null
         val normalizedMode = VoltraControlFrames.normalizedFitnessMode(mode)
         val stateLabel = when (workoutState) {
             VoltraControlFrames.WORKOUT_STATE_RESISTANCE_BAND -> "Resistance Band"
             VoltraControlFrames.WORKOUT_STATE_DAMPER -> "Damper"
+            VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE -> "Custom Curve"
             VoltraControlFrames.WORKOUT_STATE_ISOKINETIC -> "Isokinetic"
             VoltraControlFrames.WORKOUT_STATE_ISOMETRIC -> "Isometric Test"
             else -> null
@@ -603,6 +676,71 @@ object VoltraNotificationParser {
             count = count,
             phase = repPhaseLabel(payload[TELEMETRY_REP_PHASE_OFFSET].u8()),
         )
+    }
+
+    private fun parseCustomCurveTelemetry(
+        packet: ParsedVoltraPacket,
+        current: VoltraReading,
+    ): CustomCurveTelemetry? {
+        val forceTenthsLb = when (packet.commandId) {
+            CMD_ISOMETRIC_STREAM -> parseCustomCurveB4ForceTenthsLb(packet.payload)
+            CMD_TELEMETRY -> parseCustomCurveVendorForceTenthsLb(packet.payload)
+            else -> null
+        } ?: return null
+        if (forceTenthsLb !in 0..MAX_REASONABLE_CUSTOM_CURVE_FORCE_TENTHS_LB) return null
+
+        val forceLb = forceTenthsLb / CUSTOM_CURVE_FORCE_TENTHS_PER_LB
+        val baseLb = current.weightLb
+            ?.takeIf { it in 0.0..VoltraControlFrames.MAX_CUSTOM_CURVE_RESISTANCE_LIMIT_LB.toDouble() }
+            ?: VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RESISTANCE_MIN_LB.toDouble()
+        val activeThresholdLb = maxOf(
+            baseLb + CUSTOM_CURVE_REP_ACTIVE_MARGIN_LB,
+            baseLb * CUSTOM_CURVE_REP_ACTIVE_MULTIPLIER,
+        )
+        val resetThresholdLb = baseLb + CUSTOM_CURVE_REP_RESET_MARGIN_LB
+        val wasInRep = current.repPhase in CUSTOM_CURVE_ACTIVE_PHASES
+        val completedRep = wasInRep && forceLb <= resetThresholdLb
+        val previousForceLb = current.forceLb
+        val phase = when {
+            completedRep -> "Ready"
+            forceLb < activeThresholdLb -> "Ready"
+            previousForceLb != null &&
+                forceLb < previousForceLb - CUSTOM_CURVE_REP_DIRECTION_DEADBAND_LB -> "Return"
+            else -> "Pull"
+        }
+        val repCount = ((current.repCount ?: 0) + if (completedRep) 1 else 0)
+            .coerceIn(0, MAX_REASONABLE_REP_COUNT)
+        val setCount = when {
+            repCount > 0 -> maxOf(current.setCount ?: 1, 1)
+            current.setCount != null -> current.setCount ?: 0
+            else -> 0
+        }
+        return CustomCurveTelemetry(
+            forceLb = forceLb,
+            setCount = setCount,
+            repCount = repCount,
+            phase = phase,
+        )
+    }
+
+    private fun parseCustomCurveB4ForceTenthsLb(payload: ByteArray): Int? {
+        if (payload.size != CUSTOM_CURVE_B4_SHORT_BYTES && payload.size != CUSTOM_CURVE_B4_EXTENDED_BYTES) {
+            return null
+        }
+        val leadingForce = payload.u16le(0)
+        val trailingForce = payload.u16le(payload.size - 2)
+        if (kotlin.math.abs(leadingForce - trailingForce) > CUSTOM_CURVE_B4_FORCE_MIRROR_TOLERANCE_TENTHS_LB) {
+            return null
+        }
+        return leadingForce
+    }
+
+    private fun parseCustomCurveVendorForceTenthsLb(payload: ByteArray): Int? {
+        if (payload.size != CUSTOM_CURVE_VENDOR_STATUS_BYTES) return null
+        if (payload[0].u8() != TELEMETRY_ISOMETRIC_SUMMARY_TYPE) return null
+        if (payload[1].u8() != TELEMETRY_ISOMETRIC_SUMMARY_LENGTH_MARKER) return null
+        if (payload[2].u8() != VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE) return null
+        return payload.u16le(CUSTOM_CURVE_VENDOR_FORCE_OFFSET)
     }
 
     private fun parseIsometricTelemetry(
@@ -947,6 +1085,20 @@ object VoltraNotificationParser {
         else -> "Phase $phase"
     }
 
+    private fun deriveIsometricPeakRelativeForcePercent(
+        peakForceN: Double?,
+        bodyWeightN: Double?,
+        metricsType: Int?,
+    ): Double? {
+        if (metricsType != null && metricsType != ISOMETRIC_METRICS_TYPE_FORCE) return null
+        val safePeakForceN = peakForceN?.takeIf { it in 0.0..MAX_REASONABLE_ISOMETRIC_FORCE_N } ?: return null
+        val safeBodyWeightN =
+            bodyWeightN?.takeIf { it in MIN_REASONABLE_ISOMETRIC_BODY_WEIGHT_N..MAX_REASONABLE_ISOMETRIC_BODY_WEIGHT_N }
+                ?: return null
+        if (safeBodyWeightN == 0.0) return null
+        return ((safePeakForceN / safeBodyWeightN) * 1000.0).toInt() / 10.0
+    }
+
     private fun Map<Int, Number>.uint8(paramId: Int): Int? {
         return this[paramId]?.toInt()?.takeIf { it in 0..0xFF }
     }
@@ -1029,6 +1181,13 @@ object VoltraNotificationParser {
     private data class RepTelemetry(
         val setCount: Int,
         val count: Int,
+        val phase: String,
+    )
+
+    private data class CustomCurveTelemetry(
+        val forceLb: Double,
+        val setCount: Int,
+        val repCount: Int,
         val phase: String,
     )
 

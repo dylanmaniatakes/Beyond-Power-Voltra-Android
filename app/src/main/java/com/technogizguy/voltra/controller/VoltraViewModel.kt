@@ -61,6 +61,11 @@ class VoltraViewModel(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = emptyList(),
     )
+    val customCurvePresets: StateFlow<List<CustomCurvePreset>> = preferencesRepository.customCurvePresets.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = emptyList(),
+    )
     val workoutHistory: StateFlow<List<WorkoutHistoryEntry>> = preferencesRepository.workoutHistory.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -223,6 +228,30 @@ class VoltraViewModel(
         beginWorkoutSessionFor(ControlModeUi.ISOMETRIC_TEST)
         viewModelScope.launch {
             client.enterIsometricMode()
+        }
+    }
+
+    fun enterCustomCurveMode() {
+        beginWorkoutSessionFor(ControlModeUi.CUSTOM_CURVE)
+        viewModelScope.launch {
+            client.enterCustomCurveMode()
+        }
+    }
+
+    fun applyCustomCurve(
+        points: List<Float>,
+        resistanceMinLb: Int,
+        resistanceLimitLb: Int,
+        rangeOfMotionIn: Int,
+    ) {
+        beginWorkoutSessionFor(ControlModeUi.CUSTOM_CURVE)
+        viewModelScope.launch {
+            client.applyCustomCurve(
+                points = points,
+                resistanceMinLb = resistanceMinLb,
+                resistanceLimitLb = resistanceLimitLb,
+                rangeOfMotionIn = rangeOfMotionIn,
+            )
         }
     }
 
@@ -448,6 +477,30 @@ class VoltraViewModel(
         }
     }
 
+    fun saveCustomCurvePreset(
+        name: String,
+        points: List<Float>,
+        resistanceMinLb: Int,
+        resistanceLimitLb: Int,
+        rangeOfMotionIn: Int,
+    ) {
+        viewModelScope.launch {
+            preferencesRepository.upsertCustomCurvePreset(
+                name = name,
+                points = points,
+                resistanceMinLb = resistanceMinLb,
+                resistanceLimitLb = resistanceLimitLb,
+                rangeOfMotionIn = rangeOfMotionIn,
+            )
+        }
+    }
+
+    fun deleteCustomCurvePreset(id: String) {
+        viewModelScope.launch {
+            preferencesRepository.deleteCustomCurvePreset(id)
+        }
+    }
+
     fun applyWeightPreset(preset: WeightPreset) {
         val targetUnit = preferences.value.unit
         val converted = Weight(preset.value, preset.unit).toUnit(targetUnit).cappedForV1()
@@ -583,12 +636,18 @@ class VoltraViewModel(
         appendLine("Eccentric weight: ${reading.eccentricWeightLb?.let { "$it lb" } ?: "unknown"}")
         appendLine("Inverse chains: ${reading.inverseChains?.toString() ?: "unknown"}")
         appendLine("Weight training extra mode: ${reading.weightTrainingExtraMode ?: "unknown"}")
+        appendLine("App current screen id: ${reading.appCurrentScreenId ?: "unknown"}")
+        appendLine("Fitness ongoing UI: ${reading.fitnessOngoingUi ?: "unknown"}")
         appendLine("Isokinetic target speed: ${reading.isokineticTargetSpeedMmS?.let { "${it / 1000.0} m/s" } ?: "unknown"}")
         appendLine("Isokinetic eccentric speed limit: ${reading.isokineticSpeedLimitMmS?.let { if (it == 0) "Auto" else "${it / 1000.0} m/s" } ?: "unknown"}")
         appendLine("Isokinetic constant resistance: ${reading.isokineticConstantResistanceLb?.let { "$it lb" } ?: "unknown"}")
         appendLine("Isokinetic max eccentric load: ${reading.isokineticMaxEccentricLoadLb?.let { "$it lb" } ?: "unknown"}")
         appendLine("Isometric max force limit: ${reading.isometricMaxForceLb?.let { "$it lb" } ?: "unknown"}")
         appendLine("Isometric max duration: ${reading.isometricMaxDurationSeconds?.let { "$it s" } ?: "unknown"}")
+        appendLine("Isometric metrics type: ${reading.isometricMetricsType?.let(::formatIsometricMetricsType) ?: "unknown"}")
+        appendLine("Isometric body weight: ${reading.isometricBodyWeightN?.let { "$it N" } ?: "unknown"}")
+        appendLine("Isometric body weight (100g): ${reading.isometricBodyWeight100g ?: "unknown"}")
+        appendLine("Isometric body weight (lb): ${reading.isometricBodyWeightLb?.let { "$it lb" } ?: "unknown"}")
         appendLine("Isometric live force: ${reading.isometricCurrentForceN?.let { "$it N" } ?: "unknown"}")
         appendLine("Isometric peak force: ${reading.isometricPeakForceN?.let { "$it N" } ?: "unknown"}")
         appendLine("Isometric peak relative force: ${reading.isometricPeakRelativeForcePercent?.let { "$it %" } ?: "unknown"}")
@@ -746,6 +805,14 @@ class VoltraViewModel(
     private fun trimToLabel(value: Double): String {
         val rounded = kotlin.math.round(value * 10.0) / 10.0
         return if (rounded % 1.0 == 0.0) rounded.toInt().toString() else rounded.toString()
+    }
+
+    private fun formatIsometricMetricsType(type: Int): String {
+        return when (type) {
+            0 -> "Force"
+            1 -> "Weight"
+            else -> type.toString()
+        }
     }
 
     private fun damperFactorLabel(levelIndex: Int): String {

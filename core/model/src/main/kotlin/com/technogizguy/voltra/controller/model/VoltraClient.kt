@@ -36,6 +36,15 @@ interface VoltraClient {
 
     suspend fun enterIsometricMode(): VoltraCommandResult
 
+    suspend fun enterCustomCurveMode(): VoltraCommandResult
+
+    suspend fun applyCustomCurve(
+        points: List<Float>,
+        resistanceMinLb: Int,
+        resistanceLimitLb: Int,
+        rangeOfMotionIn: Int,
+    ): VoltraCommandResult
+
     suspend fun setDamperLevel(level: Int): VoltraCommandResult
 
     suspend fun setResistanceBandMaxForce(weight: Weight): VoltraCommandResult

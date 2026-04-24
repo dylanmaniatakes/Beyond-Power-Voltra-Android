@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.technogizguy.voltra.controller.model.WeightUnit
+import com.technogizguy.voltra.controller.protocol.VoltraControlFrames
 import java.util.UUID
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -93,6 +94,10 @@ class PreferencesRepository(
 
     val weightPresets: Flow<List<WeightPreset>> = context.voltraDataStore.data.map { prefs ->
         decodeWeightPresets(prefs[WEIGHT_PRESETS_JSON])
+    }
+
+    val customCurvePresets: Flow<List<CustomCurvePreset>> = context.voltraDataStore.data.map { prefs ->
+        decodeCustomCurvePresets(prefs[CUSTOM_CURVE_PRESETS_JSON])
     }
 
     val workoutHistory: Flow<List<WorkoutHistoryEntry>> = context.voltraDataStore.data.map { prefs ->
@@ -219,6 +224,52 @@ class PreferencesRepository(
         }
     }
 
+    suspend fun upsertCustomCurvePreset(
+        name: String,
+        points: List<Float>,
+        resistanceMinLb: Int,
+        resistanceLimitLb: Int,
+        rangeOfMotionIn: Int,
+    ) {
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) return
+        val normalizedPoints = points.normalizedCustomCurvePoints()
+        if (normalizedPoints.size != VoltraControlFrames.CUSTOM_CURVE_POINT_COUNT) return
+        val (normalizedResistanceMin, normalizedResistanceMax) =
+            normalizedCustomCurveResistanceRange(resistanceMinLb, resistanceLimitLb)
+        val normalizedRangeOfMotion = rangeOfMotionIn.normalizedCustomCurveRangeOfMotion()
+        context.voltraDataStore.edit { prefs ->
+            val current = decodeCustomCurvePresets(prefs[CUSTOM_CURVE_PRESETS_JSON])
+            val next = buildList {
+                add(
+                    CustomCurvePreset(
+                        id = UUID.randomUUID().toString(),
+                        name = trimmedName,
+                        points = normalizedPoints,
+                        resistanceMinLb = normalizedResistanceMin,
+                        resistanceLimitLb = normalizedResistanceMax,
+                        rangeOfMotionIn = normalizedRangeOfMotion,
+                        createdAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+                addAll(current.filterNot { it.name.equals(trimmedName, ignoreCase = true) })
+            }.take(MAX_CUSTOM_CURVE_PRESETS)
+            prefs[CUSTOM_CURVE_PRESETS_JSON] = json.encodeToString(ListSerializer(CustomCurvePreset.serializer()), next)
+        }
+    }
+
+    suspend fun deleteCustomCurvePreset(id: String) {
+        context.voltraDataStore.edit { prefs ->
+            val current = decodeCustomCurvePresets(prefs[CUSTOM_CURVE_PRESETS_JSON])
+            val next = current.filterNot { it.id == id }
+            if (next.isEmpty()) {
+                prefs.remove(CUSTOM_CURVE_PRESETS_JSON)
+            } else {
+                prefs[CUSTOM_CURVE_PRESETS_JSON] = json.encodeToString(ListSerializer(CustomCurvePreset.serializer()), next)
+            }
+        }
+    }
+
     suspend fun appendWorkoutHistory(entry: WorkoutHistoryEntry) {
         context.voltraDataStore.edit { prefs ->
             val current = decodeWorkoutHistory(prefs[WORKOUT_HISTORY_JSON])
@@ -250,6 +301,31 @@ class PreferencesRepository(
         }.getOrDefault(emptyList())
     }
 
+    private fun decodeCustomCurvePresets(raw: String?): List<CustomCurvePreset> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            json.decodeFromString(ListSerializer(CustomCurvePreset.serializer()), raw)
+                .mapNotNull { preset ->
+                    val normalizedPoints = preset.points.normalizedCustomCurvePoints()
+                    if (normalizedPoints.size == VoltraControlFrames.CUSTOM_CURVE_POINT_COUNT) {
+                        val (normalizedResistanceMin, normalizedResistanceMax) =
+                            normalizedCustomCurveResistanceRange(
+                                preset.resistanceMinLb,
+                                preset.resistanceLimitLb,
+                            )
+                        preset.copy(
+                            points = normalizedPoints,
+                            resistanceMinLb = normalizedResistanceMin,
+                            resistanceLimitLb = normalizedResistanceMax,
+                            rangeOfMotionIn = preset.rangeOfMotionIn.normalizedCustomCurveRangeOfMotion(),
+                        )
+                    } else {
+                        null
+                    }
+                }
+        }.getOrDefault(emptyList())
+    }
+
     private companion object {
         val LAST_DEVICE_ID = stringPreferencesKey("last_device_id")
         val LAST_DEVICE_NAME = stringPreferencesKey("last_device_name")
@@ -270,6 +346,7 @@ class PreferencesRepository(
         val HTTP_GATEWAY_PORT = intPreferencesKey("http_gateway_port")
         val HTTP_GATEWAY_ACCESS_KEY = stringPreferencesKey("http_gateway_access_key")
         val WEIGHT_PRESETS_JSON = stringPreferencesKey("weight_presets_json")
+        val CUSTOM_CURVE_PRESETS_JSON = stringPreferencesKey("custom_curve_presets_json")
         val WORKOUT_HISTORY_JSON = stringPreferencesKey("workout_history_json")
     }
 }
@@ -281,6 +358,28 @@ const val DEFAULT_MQTT_TOPIC_PREFIX = "voltra_control"
 const val DEFAULT_HOME_ASSISTANT_DISCOVERY_PREFIX = "homeassistant"
 const val DEFAULT_HTTP_GATEWAY_PORT = 8788
 const val MAX_WEIGHT_PRESETS = 18
+const val MAX_CUSTOM_CURVE_PRESETS = 24
 const val MAX_WORKOUT_HISTORY_ENTRIES = 120
 
 private fun generateGatewayAccessKey(): String = UUID.randomUUID().toString().replace("-", "")
+
+private fun List<Float>.normalizedCustomCurvePoints(): List<Float> =
+    take(VoltraControlFrames.CUSTOM_CURVE_POINT_COUNT).map { it.coerceIn(0f, 1f) }
+
+private fun normalizedCustomCurveResistanceRange(minLb: Int, maxLb: Int): Pair<Int, Int> {
+    val max = maxLb.coerceIn(
+        VoltraControlFrames.MIN_CUSTOM_CURVE_RESISTANCE_LIMIT_LB + VoltraControlFrames.MIN_CUSTOM_CURVE_RESISTANCE_SPAN_LB,
+        VoltraControlFrames.MAX_CUSTOM_CURVE_RESISTANCE_LIMIT_LB,
+    )
+    val min = minLb.coerceIn(
+        VoltraControlFrames.MIN_CUSTOM_CURVE_RESISTANCE_LIMIT_LB,
+        max - VoltraControlFrames.MIN_CUSTOM_CURVE_RESISTANCE_SPAN_LB,
+    )
+    return min to max
+}
+
+private fun Int.normalizedCustomCurveRangeOfMotion(): Int =
+    coerceIn(
+        VoltraControlFrames.MIN_CUSTOM_CURVE_RANGE_OF_MOTION_IN,
+        VoltraControlFrames.MAX_CUSTOM_CURVE_RANGE_OF_MOTION_IN,
+    )

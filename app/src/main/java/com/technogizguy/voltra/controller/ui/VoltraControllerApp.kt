@@ -1,5 +1,6 @@
 package com.technogizguy.voltra.controller.ui
 
+import android.graphics.Bitmap
 import android.widget.NumberPicker
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -7,13 +8,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -56,6 +61,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Slider
@@ -85,7 +91,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -105,11 +114,15 @@ import androidx.navigation.compose.rememberNavController
 import com.technogizguy.voltra.controller.R
 import com.technogizguy.voltra.controller.AccentColor
 import com.technogizguy.voltra.controller.ControlModeUi
+import com.technogizguy.voltra.controller.CustomCurvePreset
 import com.technogizguy.voltra.controller.HttpGatewayPreferences
 import com.technogizguy.voltra.controller.IsometricForceSample
 import com.technogizguy.voltra.controller.LocalPreferences
 import com.technogizguy.voltra.controller.MqttPreferences
+import com.technogizguy.voltra.controller.PreparedStartupImage
 import com.technogizguy.voltra.controller.RuntimePermissionState
+import com.technogizguy.voltra.controller.StartupImageCropTransform
+import com.technogizguy.voltra.controller.loadStartupImageBitmap
 import com.technogizguy.voltra.controller.prepareStartupImage
 import com.technogizguy.voltra.controller.VoltraViewModel
 import com.technogizguy.voltra.controller.WeightPreset
@@ -139,6 +152,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
@@ -488,6 +502,7 @@ fun VoltraControllerApp(
     val scanResults by viewModel.scanResults.collectAsStateWithLifecycle()
     val preferences by viewModel.preferences.collectAsStateWithLifecycle()
     val weightPresets by viewModel.weightPresets.collectAsStateWithLifecycle()
+    val customCurvePresets by viewModel.customCurvePresets.collectAsStateWithLifecycle()
     val workoutHistory by viewModel.workoutHistory.collectAsStateWithLifecycle()
     val showAllDevices by viewModel.showAllDevices.collectAsStateWithLifecycle()
     val selectedControlMode by viewModel.selectedControlMode.collectAsStateWithLifecycle()
@@ -659,11 +674,14 @@ fun VoltraControllerApp(
                         state = state,
                         preferences = preferences,
                         weightPresets = weightPresets,
+                        customCurvePresets = customCurvePresets,
                         selectedMode = selectedControlMode,
                         onEnterWeightTraining = viewModel::setStrengthMode,
                         onEnterDamper = viewModel::enterDamperMode,
                         onEnterIsokinetic = viewModel::enterIsokineticMode,
                         onEnterIsometric = viewModel::enterIsometricMode,
+                        onEnterCustomCurve = viewModel::enterCustomCurveMode,
+                        onApplyCustomCurve = viewModel::applyCustomCurve,
                         onRefreshModeFeatureStatus = viewModel::refreshModeFeatureStatus,
                         onSetTarget = viewModel::setTargetLoad,
                         onSetDamperLevel = viewModel::setDamperLevel,
@@ -689,6 +707,8 @@ fun VoltraControllerApp(
                         onSetWeightIncrement = viewModel::setWeightIncrement,
                         onSaveWeightPreset = viewModel::saveWeightPreset,
                         onApplyWeightPreset = viewModel::applyWeightPreset,
+                        onSaveCustomCurvePreset = viewModel::saveCustomCurvePreset,
+                        onDeleteCustomCurvePreset = viewModel::deleteCustomCurvePreset,
                         onLoad = viewModel::load,
                         onUnload = viewModel::unload,
                         onReturnHome = {
@@ -944,11 +964,14 @@ private fun ControlScreen(
     state: VoltraSessionState,
     preferences: LocalPreferences,
     weightPresets: List<WeightPreset>,
+    customCurvePresets: List<CustomCurvePreset>,
     selectedMode: ControlModeUi,
     onEnterWeightTraining: () -> Unit,
     onEnterDamper: () -> Unit,
     onEnterIsokinetic: () -> Unit,
     onEnterIsometric: () -> Unit,
+    onEnterCustomCurve: () -> Unit,
+    onApplyCustomCurve: (List<Float>, Int, Int, Int) -> Unit,
     onRefreshModeFeatureStatus: () -> Unit,
     onSetTarget: (Double) -> Unit,
     onSetDamperLevel: (Int) -> Unit,
@@ -974,6 +997,8 @@ private fun ControlScreen(
     onSetWeightIncrement: (Int) -> Unit,
     onSaveWeightPreset: (String, WeightPresetScope, Double) -> Unit,
     onApplyWeightPreset: (WeightPreset) -> Unit,
+    onSaveCustomCurvePreset: (String, List<Float>, Int, Int, Int) -> Unit,
+    onDeleteCustomCurvePreset: (String) -> Unit,
     onLoad: () -> Unit,
     onUnload: () -> Unit,
     onReturnHome: () -> Unit,
@@ -983,6 +1008,7 @@ private fun ControlScreen(
     val reportedProfile = when {
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_RESISTANCE_BAND -> ControlModeUi.RESISTANCE_BAND
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_DAMPER -> ControlModeUi.DAMPER
+        state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE -> ControlModeUi.CUSTOM_CURVE
         inIsokineticFamily -> ControlModeUi.ISOKINETIC
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC -> ControlModeUi.ISOMETRIC_TEST
         else -> ControlModeUi.WEIGHT_TRAINING
@@ -1008,7 +1034,7 @@ private fun ControlScreen(
         ControlModeUi.ISOMETRIC_TEST ->
             state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC
         ControlModeUi.CUSTOM_CURVE ->
-            true
+            state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE
     }
     val modeTitle = when (activeProfile) {
         ControlModeUi.WEIGHT_TRAINING -> "Weight Training"
@@ -1019,7 +1045,10 @@ private fun ControlScreen(
         ControlModeUi.CUSTOM_CURVE -> "Custom Curve"
     }
     val activeProfileStatus = when {
-        activeProfile == ControlModeUi.CUSTOM_CURVE -> "Curve library and apply flow are being developed."
+        activeProfile == ControlModeUi.CUSTOM_CURVE && modeSessionMatched ->
+            state.reading.workoutMode ?: "Custom Curve is ready."
+        activeProfile == ControlModeUi.CUSTOM_CURVE ->
+            "Switching VOLTRA to Custom Curve..."
         modeSessionMatched -> state.reading.workoutMode ?: state.protocolStatus.displayText()
         else -> "Switching VOLTRA to $modeTitle..."
     }
@@ -1100,7 +1129,8 @@ private fun ControlScreen(
         ControlModeUi.ISOMETRIC_TEST -> state.safety.canLoad &&
             state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC
         ControlModeUi.CUSTOM_CURVE ->
-            false
+            canLoadShared &&
+                state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE
     }
     val setTargetForMode: (Double) -> Unit = if (inResistanceBand) {
         onSetResistanceBandForce
@@ -1212,6 +1242,7 @@ private fun ControlScreen(
     var damperLaunchRequested by remember { mutableStateOf(false) }
     var isokineticLaunchRequested by remember { mutableStateOf(false) }
     var isometricLaunchRequested by remember { mutableStateOf(false) }
+    var customCurveLaunchRequested by remember { mutableStateOf(false) }
     val trackedSets = displayedSetCount(state.reading.setCount, state.reading.repCount)
 
     LaunchedEffect(isLoaded) {
@@ -1428,6 +1459,25 @@ private fun ControlScreen(
         }
     }
 
+    LaunchedEffect(selectedMode, state.connectionState, state.controlCommandsEnabled, state.safety.workoutState) {
+        if (
+            selectedMode == ControlModeUi.CUSTOM_CURVE &&
+            state.connectionState == VoltraConnectionState.CONNECTED &&
+            state.controlCommandsEnabled &&
+            state.safety.workoutState != VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE &&
+            !customCurveLaunchRequested
+        ) {
+            customCurveLaunchRequested = true
+            onEnterCustomCurve()
+        } else if (
+            selectedMode != ControlModeUi.CUSTOM_CURVE ||
+            state.connectionState != VoltraConnectionState.CONNECTED ||
+            state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE
+        ) {
+            customCurveLaunchRequested = false
+        }
+    }
+
     fun setPendingTarget(target: Double) {
         pendingTarget = snapWeight(target, minLoad, maxLoad, weightStep)
     }
@@ -1602,7 +1652,19 @@ private fun ControlScreen(
             ControlModeUi.CUSTOM_CURVE ->
                 CustomCurveCard(
                     status = activeProfileStatus,
-                    onReturnHome = onReturnHome,
+                    presets = customCurvePresets,
+                    currentForceLb = state.reading.forceLb,
+                    reps = state.reading.repCount,
+                    phase = state.reading.repPhase,
+                    isLoaded = isLoaded,
+                    controlReady = state.controlCommandsEnabled && state.connectionState == VoltraConnectionState.CONNECTED,
+                    canLoad = canLoadActiveProfile,
+                    onApplyCurve = onApplyCustomCurve,
+                    onSavePreset = onSaveCustomCurvePreset,
+                    onDeletePreset = onDeleteCustomCurvePreset,
+                    onLoad = onLoad,
+                    onUnload = onUnload,
+                    onExitWorkout = onExitWorkout,
                 )
         }
     }
@@ -1868,6 +1930,7 @@ private fun DevicePersonalizationCard(
     val currentDeviceName = state.currentDevice?.name.orEmpty()
     var deviceName by remember(currentDeviceName) { mutableStateOf(currentDeviceName) }
     var localMessage by remember { mutableStateOf<String?>(null) }
+    var startupImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
     val latestPersonalizationCommand = state.commandLog.lastOrNull { command ->
         command.command == VoltraControlCommand.SET_DEVICE_NAME ||
             command.command == VoltraControlCommand.UPLOAD_STARTUP_IMAGE
@@ -1887,26 +1950,53 @@ private fun DevicePersonalizationCard(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        localMessage = "Preparing startup image..."
+        localMessage = "Loading startup image..."
         scope.launch {
             runCatching {
-                val prepared = withContext(Dispatchers.IO) {
-                    prepareStartupImage(context, uri)
+                withContext(Dispatchers.IO) {
+                    loadStartupImageBitmap(context, uri)
                 }
-                onUploadStartupImage(prepared.jpegBytes)
-                prepared
-            }.onSuccess { prepared ->
-                localMessage = "Prepared startup image (${prepared.jpegBytes.size} bytes)."
+            }.onSuccess { bitmap ->
+                startupImageBitmap?.recycle()
+                startupImageBitmap = bitmap
+                localMessage = "Adjust the square crop, then send the startup image when it looks right."
             }.onFailure { error ->
-                localMessage = error.message ?: "Could not prepare the selected image."
+                localMessage = error.message ?: "Could not load the selected image."
             }
         }
+    }
+
+    startupImageBitmap?.let { bitmap ->
+        StartupImageCropDialog(
+            bitmap = bitmap,
+            onDismiss = {
+                bitmap.recycle()
+                startupImageBitmap = null
+            },
+            onConfirm = { cropTransform ->
+                scope.launch {
+                    runCatching {
+                        val prepared = withContext(Dispatchers.IO) {
+                            prepareStartupImage(bitmap, cropTransform)
+                        }
+                        onUploadStartupImage(prepared.jpegBytes)
+                        prepared
+                    }.onSuccess { prepared ->
+                        localMessage = "Prepared startup image (${prepared.jpegBytes.size} bytes). Android now sends the square crop you chose."
+                    }.onFailure { error ->
+                        localMessage = error.message ?: "Could not prepare the selected image."
+                    }
+                    bitmap.recycle()
+                    startupImageBitmap = null
+                }
+            },
+        )
     }
 
     MetricCard {
         Text("Device Personalization", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         Text(
-            "Set the VOLTRA name from your phone. Startup image work is still in development.",
+            "Set the VOLTRA name from your phone. Startup image work is still in development, and Android now lets you choose the square crop before upload.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1955,14 +2045,14 @@ private fun DevicePersonalizationCard(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                     )
                 },
-                enabled = false,
+                enabled = isConnected,
                 modifier = Modifier.weight(1f),
             ) {
                 Text("Startup Image (In Development)")
             }
         }
         Text(
-            "Startup image upload is still in development.",
+            "Startup image upload is still in development. Android now opens a square crop step before upload so the export can match the iPad flow more closely.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1981,6 +2071,142 @@ private fun DevicePersonalizationCard(
             )
         }
     }
+}
+
+@Composable
+private fun StartupImageCropDialog(
+    bitmap: Bitmap,
+    onDismiss: () -> Unit,
+    onConfirm: (StartupImageCropTransform) -> Unit,
+) {
+    var zoom by remember(bitmap) { mutableFloatStateOf(1f) }
+    var offsetX by remember(bitmap) { mutableFloatStateOf(0f) }
+    var offsetY by remember(bitmap) { mutableFloatStateOf(0f) }
+    var viewportSizePx by remember(bitmap) { mutableFloatStateOf(0f) }
+
+    fun clampOffsets(nextOffsetX: Float, nextOffsetY: Float, nextZoom: Float): Pair<Float, Float> {
+        if (viewportSizePx <= 0f) return nextOffsetX to nextOffsetY
+        val baseScale = max(
+            viewportSizePx / bitmap.width.toFloat(),
+            viewportSizePx / bitmap.height.toFloat(),
+        )
+        val maxOffsetX = (((bitmap.width * baseScale * nextZoom) - viewportSizePx) / 2f).coerceAtLeast(0f)
+        val maxOffsetY = (((bitmap.height * baseScale * nextZoom) - viewportSizePx) / 2f).coerceAtLeast(0f)
+        return nextOffsetX.coerceIn(-maxOffsetX, maxOffsetX) to nextOffsetY.coerceIn(-maxOffsetY, maxOffsetY)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(
+                onClick = {
+                    onConfirm(
+                        StartupImageCropTransform(
+                            zoom = zoom,
+                            offsetXFraction = if (viewportSizePx > 0f) offsetX / viewportSizePx else 0f,
+                            offsetYFraction = if (viewportSizePx > 0f) offsetY / viewportSizePx else 0f,
+                        ),
+                    )
+                },
+            ) {
+                Text("Send")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+        title = {
+            Text("Crop Startup Image")
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Drag and zoom until the square looks right. Android will upload exactly this square crop.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black)
+                        .border(
+                            BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
+                            RoundedCornerShape(8.dp),
+                        )
+                        .pointerInput(bitmap, viewportSizePx, zoom, offsetX, offsetY) {
+                            detectTransformGestures { _, pan, gestureZoom, _ ->
+                                val nextZoom = (zoom * gestureZoom).coerceIn(1f, 4f)
+                                val (clampedX, clampedY) = clampOffsets(
+                                    nextOffsetX = offsetX + pan.x,
+                                    nextOffsetY = offsetY + pan.y,
+                                    nextZoom = nextZoom,
+                                )
+                                zoom = nextZoom
+                                offsetX = clampedX
+                                offsetY = clampedY
+                            }
+                        },
+                ) {
+                    val density = androidx.compose.ui.platform.LocalDensity.current
+                    val viewport = with(density) { maxWidth.toPx() }
+                    viewportSizePx = viewport
+                    val baseScale = max(
+                        viewport / bitmap.width.toFloat(),
+                        viewport / bitmap.height.toFloat(),
+                    )
+                    val baseWidthDp = with(density) { (bitmap.width.toFloat() * baseScale).toDp() }
+                    val baseHeightDp = with(density) { (bitmap.height.toFloat() * baseScale).toDp() }
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(width = baseWidthDp, height = baseHeightDp)
+                            .graphicsLayer {
+                                scaleX = zoom
+                                scaleY = zoom
+                                translationX = offsetX
+                                translationY = offsetY
+                            },
+                    )
+                }
+                Slider(
+                    value = zoom,
+                    onValueChange = { nextZoom ->
+                        val (clampedX, clampedY) = clampOffsets(offsetX, offsetY, nextZoom)
+                        zoom = nextZoom
+                        offsetX = clampedX
+                        offsetY = clampedY
+                    },
+                    valueRange = 1f..4f,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Zoom ${(zoom * 100f).roundToInt()}%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(
+                        onClick = {
+                            zoom = 1f
+                            offsetX = 0f
+                            offsetY = 0f
+                        },
+                    ) {
+                        Text("Reset")
+                    }
+                }
+            }
+        },
+    )
 }
 
 @Composable
@@ -2689,7 +2915,7 @@ private fun ModeGrid(
         ModeTileSpec("Damper", ModeIconKind.DAMPER, if (controlReady) "" else "Connect to enable", controlReady, onDamper),
         ModeTileSpec("Isokinetic", ModeIconKind.ISOKINETIC, if (controlReady) "" else "Connect to enable", controlReady, onIsokinetic),
         ModeTileSpec("Isometric Test", ModeIconKind.ISOMETRIC_TEST, if (controlReady) "" else "Connect to enable", controlReady, onIsometric),
-        ModeTileSpec("Custom Curve", ModeIconKind.CUSTOM_CURVE, if (controlReady) "Being Developed" else "Connect to enable", controlReady, onCustomCurve),
+        ModeTileSpec("Custom Curve", ModeIconKind.CUSTOM_CURVE, if (controlReady) "Curve builder" else "Connect to enable", controlReady, onCustomCurve),
     )
     val developerModes = listOf(
         ModeTileSpec("Rowing", ModeIconKind.ROWING, "Being Developed", false, {}),
@@ -4646,9 +4872,63 @@ private const val ISOMETRIC_EXIT_REENTRY_GRACE_MILLIS = 4_000L
 @Composable
 private fun CustomCurveCard(
     status: String,
-    onReturnHome: () -> Unit,
+    presets: List<CustomCurvePreset>,
+    currentForceLb: Double?,
+    reps: Int?,
+    phase: String?,
+    isLoaded: Boolean,
+    controlReady: Boolean,
+    canLoad: Boolean,
+    onApplyCurve: (List<Float>, Int, Int, Int) -> Unit,
+    onSavePreset: (String, List<Float>, Int, Int, Int) -> Unit,
+    onDeletePreset: (String) -> Unit,
+    onLoad: () -> Unit,
+    onUnload: () -> Unit,
+    onExitWorkout: () -> Unit,
 ) {
     val accent = LocalControlAccent.current
+    var showSavePresetDialog by remember { mutableStateOf(false) }
+    var presetNameInput by remember { mutableStateOf("") }
+    val curvePoints = remember {
+        mutableStateListOf<Float>().apply {
+            addAll(VoltraControlFrames.DEFAULT_CUSTOM_CURVE_POINTS)
+        }
+    }
+    var showPointSliders by remember { mutableStateOf(false) }
+    var resistanceMinLb by remember { mutableStateOf(VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RESISTANCE_MIN_LB) }
+    var resistanceLimitLb by remember { mutableStateOf(VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RESISTANCE_LIMIT_LB) }
+    var rangeOfMotionIn by remember { mutableStateOf(VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RANGE_OF_MOTION_IN) }
+    if (showSavePresetDialog) {
+        AlertDialog(
+            onDismissRequest = { showSavePresetDialog = false },
+            title = { Text("Save Curve") },
+            text = {
+                OutlinedTextField(
+                    value = presetNameInput,
+                    onValueChange = { presetNameInput = it },
+                    label = { Text("Preset Name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onSavePreset(presetNameInput, curvePoints.toList(), resistanceMinLb, resistanceLimitLb, rangeOfMotionIn)
+                        presetNameInput = ""
+                        showSavePresetDialog = false
+                    },
+                    enabled = presetNameInput.isNotBlank(),
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSavePresetDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.elevatedCardColors(
@@ -4668,41 +4948,356 @@ private fun CustomCurveCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                shape = MaterialTheme.shapes.medium,
+
+            Row(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                RepStat(
+                    "Force",
+                    currentForceLb?.let { "${formatWeightValue(it)} lb" } ?: "--",
+                    Modifier.weight(1f),
+                )
+                RepStat("Reps", reps?.toString() ?: "--", Modifier.weight(1f))
+                RepStat("Phase", phase ?: if (isLoaded) "Loaded" else "Ready", Modifier.weight(1f))
+            }
+
+            Text("Curve Builder", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            CustomCurveGraph(
+                points = curvePoints,
+                enabled = controlReady,
+                onPointChange = { index, value -> curvePoints[index] = value },
+                modifier = Modifier.fillMaxWidth().height(150.dp),
+            )
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Limits", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                CustomCurveRangeSlider(
+                    label = "Resistance Range",
+                    minValue = resistanceMinLb,
+                    maxValue = resistanceLimitLb,
+                    suffix = "lb",
+                    valueRange = VoltraControlFrames.MIN_CUSTOM_CURVE_RESISTANCE_LIMIT_LB..VoltraControlFrames.MAX_CUSTOM_CURVE_RESISTANCE_LIMIT_LB,
+                    minimumSpan = VoltraControlFrames.MIN_CUSTOM_CURVE_RESISTANCE_SPAN_LB,
+                    enabled = controlReady,
+                    accent = accent,
+                    onValueChange = { min, max ->
+                        resistanceMinLb = min
+                        resistanceLimitLb = max
+                    },
+                )
+                CustomCurveIntSlider(
+                    label = "Range of Motion",
+                    value = rangeOfMotionIn,
+                    suffix = "in",
+                    valueRange = VoltraControlFrames.MIN_CUSTOM_CURVE_RANGE_OF_MOTION_IN..VoltraControlFrames.MAX_CUSTOM_CURVE_RANGE_OF_MOTION_IN,
+                    enabled = controlReady,
+                    accent = accent,
+                    onValueChange = { rangeOfMotionIn = it },
+                )
+            }
+
+            HorizontalDivider()
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Curve Library", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                    Text(
-                        "Curve create, edit, and apply actions are being developed. This page stays simple until the full control flow is ready.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    FilledTonalButton(
-                        onClick = {},
-                        enabled = false,
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = accent.accentContainer,
-                            contentColor = accent.onAccentContainer,
-                            disabledContainerColor = accent.accentContainer.copy(alpha = 0.5f),
-                            disabledContentColor = accent.onAccentContainer.copy(alpha = 0.75f),
-                        ),
-                    ) {
-                        Text("Feature Being Developed")
+                    Text("Curve Points", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    TextButton(onClick = { showPointSliders = !showPointSliders }) {
+                        Text(if (showPointSliders) "Hide Sliders" else "Fine Tune")
+                    }
+                }
+                Text(
+                    curvePoints.joinToString(separator = "  ") { "${(it * 100).roundToInt()}%" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (showPointSliders) {
+                    curvePoints.forEachIndexed { index, value ->
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text("Point ${index + 1}", style = MaterialTheme.typography.labelMedium)
+                                Text("${(value * 100).roundToInt()}%", style = MaterialTheme.typography.labelMedium)
+                            }
+                            Slider(
+                                value = value,
+                                onValueChange = { curvePoints[index] = it.coerceIn(0f, 1f) },
+                                valueRange = 0f..1f,
+                                enabled = controlReady,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = accent.accent,
+                                    activeTrackColor = accent.accent,
+                                ),
+                            )
+                        }
                     }
                 }
             }
-            OutlinedButton(
-                onClick = onReturnHome,
+
+            Row(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Back to Home")
+                FilledTonalButton(
+                    onClick = { onApplyCurve(curvePoints.toList(), resistanceMinLb, resistanceLimitLb, rangeOfMotionIn) },
+                    enabled = controlReady,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = accent.accentContainer,
+                        contentColor = accent.onAccentContainer,
+                        disabledContainerColor = accent.accentContainer.copy(alpha = 0.5f),
+                        disabledContentColor = accent.onAccentContainer.copy(alpha = 0.75f),
+                    ),
+                ) {
+                    Text("Apply")
+                }
+                FilledTonalButton(
+                    onClick = { if (isLoaded) onUnload() else onLoad() },
+                    modifier = Modifier.weight(1f),
+                    enabled = if (isLoaded) controlReady else canLoad,
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = accent.accent,
+                        contentColor = accent.onAccent,
+                    ),
+                ) {
+                    Text(if (isLoaded) "Unload" else "Load")
+                }
             }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        presetNameInput = ""
+                        showSavePresetDialog = true
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Save")
+                }
+                OutlinedButton(
+                    onClick = {
+                        curvePoints.clear()
+                        curvePoints.addAll(VoltraControlFrames.DEFAULT_CUSTOM_CURVE_POINTS)
+                        resistanceMinLb = VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RESISTANCE_MIN_LB
+                        resistanceLimitLb = VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RESISTANCE_LIMIT_LB
+                        rangeOfMotionIn = VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RANGE_OF_MOTION_IN
+                    },
+                    enabled = controlReady,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Reset")
+                }
+            }
+
+            if (presets.isNotEmpty()) {
+                HorizontalDivider()
+                Text("Saved Curves", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                presets.forEach { preset ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            preset.name,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        TextButton(
+                            onClick = {
+                                curvePoints.clear()
+                                curvePoints.addAll(preset.points)
+                                resistanceMinLb = preset.resistanceMinLb
+                                resistanceLimitLb = preset.resistanceLimitLb
+                                rangeOfMotionIn = preset.rangeOfMotionIn
+                            },
+                        ) {
+                            Text("Load")
+                        }
+                        TextButton(onClick = { onDeletePreset(preset.id) }) {
+                            Text("Delete")
+                        }
+                    }
+                }
+            }
+
+            OutlinedButton(
+                onClick = onExitWorkout,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = controlReady,
+            ) {
+                Text("Exit Mode")
+            }
+        }
+    }
+}
+
+@Composable
+private fun CustomCurveRangeSlider(
+    label: String,
+    minValue: Int,
+    maxValue: Int,
+    suffix: String,
+    valueRange: IntRange,
+    minimumSpan: Int,
+    enabled: Boolean,
+    accent: ControlAccentPalette,
+    onValueChange: (Int, Int) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(label, style = MaterialTheme.typography.labelLarge)
+            Text("$minValue-$maxValue $suffix", style = MaterialTheme.typography.labelLarge)
+        }
+        RangeSlider(
+            value = minValue.toFloat()..maxValue.toFloat(),
+            onValueChange = { range ->
+                var nextMin = range.start.roundToInt()
+                    .coerceIn(valueRange.first, valueRange.last - minimumSpan)
+                var nextMax = range.endInclusive.roundToInt()
+                    .coerceIn(valueRange.first + minimumSpan, valueRange.last)
+                if (nextMax - nextMin < minimumSpan) {
+                    if (nextMin != minValue) {
+                        nextMax = (nextMin + minimumSpan).coerceAtMost(valueRange.last)
+                    } else {
+                        nextMin = (nextMax - minimumSpan).coerceAtLeast(valueRange.first)
+                    }
+                }
+                onValueChange(nextMin, nextMax)
+            },
+            valueRange = valueRange.first.toFloat()..valueRange.last.toFloat(),
+            enabled = enabled,
+            colors = SliderDefaults.colors(
+                thumbColor = accent.accent,
+                activeTrackColor = accent.accent,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun CustomCurveIntSlider(
+    label: String,
+    value: Int,
+    suffix: String,
+    valueRange: IntRange,
+    enabled: Boolean,
+    accent: ControlAccentPalette,
+    onValueChange: (Int) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(label, style = MaterialTheme.typography.labelLarge)
+            Text("$value $suffix", style = MaterialTheme.typography.labelLarge)
+        }
+        Slider(
+            value = value.toFloat(),
+            onValueChange = {
+                onValueChange(it.roundToInt().coerceIn(valueRange.first, valueRange.last))
+            },
+            valueRange = valueRange.first.toFloat()..valueRange.last.toFloat(),
+            enabled = enabled,
+            colors = SliderDefaults.colors(
+                thumbColor = accent.accent,
+                activeTrackColor = accent.accent,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun CustomCurveGraph(
+    points: List<Float>,
+    enabled: Boolean,
+    onPointChange: (Int, Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val accent = LocalControlAccent.current
+    val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+    val lineColor = accent.accent
+    val handleColor = accent.onAccent
+    val plotPadding = 12.dp
+    Canvas(
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.surface, MaterialTheme.shapes.small)
+            .pointerInput(enabled, points.size) {
+                if (!enabled || points.isEmpty()) return@pointerInput
+
+                fun updatePoint(position: Offset) {
+                    val paddingPx = plotPadding.toPx()
+                    val plotWidth = (size.width - paddingPx * 2f).coerceAtLeast(1f)
+                    val plotHeight = (size.height - paddingPx * 2f).coerceAtLeast(1f)
+                    val index = if (points.lastIndex <= 0) {
+                        0
+                    } else {
+                        (((position.x - paddingPx) / plotWidth) * points.lastIndex)
+                            .roundToInt()
+                            .coerceIn(0, points.lastIndex)
+                    }
+                    val value = (1f - ((position.y - paddingPx) / plotHeight))
+                        .coerceIn(0f, 1f)
+                    onPointChange(index, value)
+                }
+
+                detectDragGestures(
+                    onDragStart = { offset -> updatePoint(offset) },
+                    onDrag = { change, _ ->
+                        updatePoint(change.position)
+                        change.consume()
+                    },
+                )
+            },
+    ) {
+        if (points.isEmpty()) return@Canvas
+        val paddingPx = plotPadding.toPx()
+        val plotLeft = paddingPx
+        val plotTop = paddingPx
+        val plotWidth = (size.width - paddingPx * 2f).coerceAtLeast(1f)
+        val plotHeight = (size.height - paddingPx * 2f).coerceAtLeast(1f)
+        repeat(4) { index ->
+            val x = plotLeft + plotWidth * index / 3f
+            drawLine(gridColor, Offset(x, plotTop), Offset(x, plotTop + plotHeight), strokeWidth = 1f)
+            val y = plotTop + plotHeight * index / 3f
+            drawLine(gridColor, Offset(plotLeft, y), Offset(plotLeft + plotWidth, y), strokeWidth = 1f)
+        }
+        val path = Path()
+        val pointOffsets = points.mapIndexed { index, value ->
+            val x = if (points.lastIndex == 0) {
+                plotLeft
+            } else {
+                plotLeft + plotWidth * index / points.lastIndex
+            }
+            val y = plotTop + plotHeight - (plotHeight * value.coerceIn(0f, 1f))
+            Offset(x, y)
+        }
+        pointOffsets.forEachIndexed { index, offset ->
+            if (index == 0) {
+                path.moveTo(offset.x, offset.y)
+            } else {
+                path.lineTo(offset.x, offset.y)
+            }
+        }
+        drawPath(path, color = lineColor, style = Stroke(width = 4f, cap = StrokeCap.Round))
+        pointOffsets.forEach { offset ->
+            drawCircle(color = lineColor, radius = 8.dp.toPx(), center = offset)
+            drawCircle(color = handleColor, radius = 3.dp.toPx(), center = offset)
         }
     }
 }

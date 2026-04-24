@@ -23,8 +23,6 @@ object VoltraFrameBuilder {
     private const val FRAME_TYPE_APP_WRITE: Int = 0x04
     private const val FIXED_HEADER_BYTES: Int = 11   // magic+len+type+crc8+sender+recv+seq_lo+seq_hi+proto_lo+proto_hi+cmd
     private const val CRC16_BYTES: Int = 2
-    private const val MAX_ENCODED_LENGTH_BYTE: Int = 0xFF
-
     /** Sender ID used by the app in all confirmed write frames. */
     const val APP_SENDER: Int = 0xAA
 
@@ -55,7 +53,10 @@ object VoltraFrameBuilder {
     ): ByteArray {
         val totalLength = FIXED_HEADER_BYTES + payload.size + CRC16_BYTES
         require(totalLength <= 0xFFFF) { "VOLTRA frame payload too large: length=$totalLength > 65535" }
-        val encodedLength = totalLength.coerceAtMost(MAX_ENCODED_LENGTH_BYTE)
+        // Official cropped-photo startup-image frames exceed 255 bytes on transport.
+        // The device still expects the frame length byte to carry the low byte of the
+        // real total length, not a saturated 0xFF placeholder.
+        val encodedLength = totalLength and 0xFF
 
         val headerForCrc8 = byteArrayOf(MAGIC, encodedLength.toByte(), FRAME_TYPE_APP_WRITE.toByte())
         val crc8Val = crc8(headerForCrc8)

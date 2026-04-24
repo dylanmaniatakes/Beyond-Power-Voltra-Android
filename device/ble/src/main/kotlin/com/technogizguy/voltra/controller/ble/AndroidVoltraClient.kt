@@ -88,6 +88,9 @@ class AndroidVoltraClient(
     private var lastIsometricLoadAttemptAtMillis = 0L
     private var lastIsometricVendorRefreshAtMillis = 0L
     private var isometricVendorRefreshUntilMillis = 0L
+    private var pendingStartupImageChunkCount = 0
+    private var startupImageAckedChunkCount = 0
+    private val startupImageStatePollRunnables = mutableListOf<Runnable>()
 
     private val mutableState = MutableStateFlow(VoltraSessionState())
     override val state: StateFlow<VoltraSessionState> = mutableState
@@ -542,6 +545,174 @@ class AndroidVoltraClient(
         }
     }
 
+    override suspend fun enterCustomCurveMode(): VoltraCommandResult {
+        return queueCustomCurveMode(
+            command = VoltraControlCommand.ENTER_CUSTOM_CURVE_MODE,
+            curvePoints = VoltraControlFrames.DEFAULT_CUSTOM_CURVE_POINTS,
+            resistanceMinLb = VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RESISTANCE_MIN_LB,
+            resistanceLimitLb = VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RESISTANCE_LIMIT_LB,
+            rangeOfMotionIn = VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RANGE_OF_MOTION_IN,
+            duplicateMessage = "Custom Curve entry is already queued.",
+            label = "apply Custom Curve",
+            vendorFrameLabel = "upload Custom Curve",
+        )
+    }
+
+    override suspend fun applyCustomCurve(
+        points: List<Float>,
+        resistanceMinLb: Int,
+        resistanceLimitLb: Int,
+        rangeOfMotionIn: Int,
+    ): VoltraCommandResult {
+        return queueCustomCurveMode(
+            command = VoltraControlCommand.APPLY_CUSTOM_CURVE,
+            curvePoints = points,
+            resistanceMinLb = resistanceMinLb,
+            resistanceLimitLb = resistanceLimitLb,
+            rangeOfMotionIn = rangeOfMotionIn,
+            duplicateMessage = "Custom Curve apply is already queued.",
+            label = "apply Custom Curve builder graph",
+            vendorFrameLabel = "upload Custom Curve builder graph",
+        )
+    }
+
+    private fun queueCustomCurveMode(
+        command: VoltraControlCommand,
+        curvePoints: List<Float>,
+        resistanceMinLb: Int,
+        resistanceLimitLb: Int,
+        rangeOfMotionIn: Int,
+        duplicateMessage: String,
+        label: String,
+        vendorFrameLabel: String,
+    ): VoltraCommandResult {
+        val current = mutableState.value
+        val currentGatt = gatt
+        return when {
+            !current.controlCommandsEnabled ->
+                blocked(command, "Custom Curve is locked until this session receives a valid VOLTRA notification frame.")
+            current.connectionState != VoltraConnectionState.CONNECTED ->
+                blocked(command, "Cannot enter Custom Curve while the VOLTRA is not connected.")
+            currentGatt == null ->
+                blocked(command, "No active GATT connection.")
+            hasPendingCommand(command) ->
+                logCommand(
+                    VoltraCommandResult(
+                        command = command,
+                        status = VoltraCommandStatus.QUEUED,
+                        message = duplicateMessage,
+                        timestampMillis = System.currentTimeMillis(),
+                    ),
+                )
+            else -> {
+                cancelIsometricVendorRefreshBurst()
+                pendingIsometricAutoLoad = false
+                stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
+                mutableState.update {
+                    it.copy(
+                        reading = it.reading.clearIsometricTestState().copy(
+                            workoutMode = "Custom Curve, Ready",
+                            forceLb = null,
+                            setCount = 0,
+                            repCount = 0,
+                            repPhase = "Ready",
+                        ),
+                        safety = it.safety.copy(
+                            canLoad = true,
+                            reasons = listOf("Ready for current mode load."),
+                            parsedDeviceState = true,
+                            workoutState = VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE,
+                            fitnessMode = VoltraControlFrames.FITNESS_MODE_STRENGTH_READY,
+                            targetLoadLb = it.safety.targetLoadLb ?: it.reading.weightLb,
+                        ),
+                    )
+                }
+                sendTransportFrames(
+                    gatt = currentGatt,
+                    command = command,
+                    frames = buildList {
+                        add(
+                            QueuedFrameSpec(
+                                label = "subscribe Custom Curve fitness data stream",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                                    payload = VoltraControlFrames.setFitnessDataNotifySubscribePayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                        add(
+                            QueuedFrameSpec(
+                                label = "bulk subscribe Custom Curve params",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_BULK_PARAM_WRITE,
+                                    payload = VoltraControlFrames.customCurveBulkSubscribePayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                        add(
+                            QueuedFrameSpec(
+                                label = "set Custom Curve fitness data notify hz",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                                    payload = VoltraControlFrames.setFitnessDataNotifyHzPayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                        add(
+                            QueuedFrameSpec(
+                                label = "set Custom Curve resistance min (BP_BASE_WEIGHT=$resistanceMinLb lb)",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                                    payload = VoltraControlFrames.setBaseWeightPayload(resistanceMinLb),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                        add(
+                            QueuedFrameSpec(
+                                label = vendorFrameLabel,
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_VENDOR,
+                                    payload = VoltraControlFrames.customCurveVendorPresetPayload(
+                                        points = curvePoints,
+                                        resistanceMinLb = resistanceMinLb,
+                                        resistanceLimitLb = resistanceLimitLb,
+                                        rangeOfMotionIn = rangeOfMotionIn,
+                                    ),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                        add(
+                            QueuedFrameSpec(
+                                label = "enter Custom Curve (FITNESS_WORKOUT_STATE=6)",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                                    payload = VoltraControlFrames.enterCustomCurvePayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                        add(
+                            QueuedFrameSpec(
+                                label = "read back Custom Curve mode feature state",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_PARAM_READ,
+                                    payload = VoltraControlFrames.readParamsPayload(*MODE_FEATURE_STATUS_PARAMS.toIntArray()),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                    },
+                    label = label,
+                )
+            }
+        }
+    }
+
     override suspend fun setDamperLevel(level: Int): VoltraCommandResult {
         val current = mutableState.value
         val currentGatt = gatt
@@ -917,6 +1088,12 @@ class AndroidVoltraClient(
                     .asList()
                     .chunked(VoltraControlFrames.STARTUP_IMAGE_CHUNK_DATA_BYTES)
                     .map { it.toByteArray() }
+                pendingStartupImageChunkCount = chunks.size
+                startupImageAckedChunkCount = 0
+                Log.d(
+                    STARTUP_DEBUG_TAG,
+                    "queue startup image bytes=${jpegBytes.size} chunks=${chunks.size} chunkBytes=${VoltraControlFrames.STARTUP_IMAGE_CHUNK_DATA_BYTES}",
+                )
                 val queuedFrames = buildList {
                     add(
                         QueuedFrameSpec(
@@ -1473,6 +1650,44 @@ class AndroidVoltraClient(
                     ),
                 )
             }
+            current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE ->
+                sendTransportFrames(
+                    gatt = currentGatt,
+                    command = VoltraControlCommand.LOAD,
+                    frames = buildList {
+                        add(
+                            QueuedFrameSpec(
+                                label = "read Custom Curve cable position (MC_DEFAULT_OFFLEN_CM + BP_RUNTIME_POSITION_CM)",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_PARAM_READ,
+                                    payload = VoltraControlFrames.readIsometricCablePositionPayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                        add(
+                            QueuedFrameSpec(
+                                label = "load Custom Curve (BP_SET_FITNESS_MODE=5)",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                                    payload = VoltraControlFrames.loadPayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                        add(
+                            QueuedFrameSpec(
+                                label = "refresh Custom Curve vendor state stream (AA13 01)",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_VENDOR,
+                                    payload = VoltraControlFrames.vendorStateRefreshPayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                    },
+                    label = "load Custom Curve",
+                )
             else -> sendParamWriteCommands(
                 gatt = currentGatt,
                 command = VoltraControlCommand.LOAD,
@@ -2311,6 +2526,9 @@ class AndroidVoltraClient(
         mutableState.update {
             it.copy(statusMessage = "Writing ${item.packet.label}.")
         }
+        if (item.command == VoltraControlCommand.UPLOAD_STARTUP_IMAGE) {
+            Log.d(STARTUP_DEBUG_TAG, "write ${item.packet.label}")
+        }
 
         val writeStarted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val writeType = if (GattProperty.WRITE in item.characteristic.properties.toGattProperties()) {
@@ -2477,6 +2695,10 @@ class AndroidVoltraClient(
         if (clearedFreshIsometricAttempt) {
             Log.d(ISO_DEBUG_TAG, "fresh Isometric load detected; cleared retained graph/result state")
         }
+        if (inboundFrame) {
+            maybeHandleStartupImageAck(parsedPacket)
+            maybeTraceStartupImageStatePacket(parsedPacket)
+        }
         traceIsometricFrame(
             characteristicUuid = characteristic.uuid.toString().uppercase(),
             parsedPacket = parsedPacket,
@@ -2497,6 +2719,133 @@ class AndroidVoltraClient(
         }
         reconcileIsometricVendorRefreshLoop()
         maybeAutoLoadIsometric(gatt)
+    }
+
+    private fun maybeHandleStartupImageAck(parsedPacket: Any?) {
+        val packet = parsedPacket as? com.technogizguy.voltra.controller.protocol.ParsedVoltraPacket ?: return
+        if (packet.commandId != VoltraControlFrames.CMD_STARTUP_IMAGE || packet.payload.size < 2) return
+        val ackCode = packet.payload[1].toInt() and 0xFF
+        when (ackCode) {
+            0x03 -> {
+                startupImageAckedChunkCount += 1
+                Log.d(
+                    STARTUP_DEBUG_TAG,
+                    "ack chunk ${startupImageAckedChunkCount}/${pendingStartupImageChunkCount} seq=${packet.sequence16}",
+                )
+            }
+            0x04 -> {
+                Log.d(STARTUP_DEBUG_TAG, "ack finalize seq=${packet.sequence16}")
+                logCommand(
+                    VoltraCommandResult(
+                        command = VoltraControlCommand.UPLOAD_STARTUP_IMAGE,
+                        status = VoltraCommandStatus.CONFIRMED,
+                        message = "VOLTRA acknowledged startup image finalize.",
+                        timestampMillis = System.currentTimeMillis(),
+                        rawHex = packet.payload.toHexString(),
+                    ),
+                )
+            }
+            0x05 -> {
+                Log.d(STARTUP_DEBUG_TAG, "ack apply seq=${packet.sequence16}")
+                cancelStartupImageStatePolls()
+                logCommand(
+                    VoltraCommandResult(
+                        command = VoltraControlCommand.UPLOAD_STARTUP_IMAGE,
+                        status = VoltraCommandStatus.CONFIRMED,
+                        message = "VOLTRA accepted startup image transfer. Check the device for an on-unit confirmation prompt.",
+                        timestampMillis = System.currentTimeMillis(),
+                        rawHex = packet.payload.toHexString(),
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun queueStartupImageStateRead(label: String) {
+        gatt?.let { currentGatt ->
+            Log.d(STARTUP_DEBUG_TAG, "queue $label")
+            queueParamReadCommand(
+                gatt = currentGatt,
+                command = VoltraControlCommand.UPLOAD_STARTUP_IMAGE,
+                paramIds = listOf(
+                    VoltraControlFrames.PARAM_EP_LOGO_APPLY_ACTION,
+                    VoltraControlFrames.PARAM_POWER_OFF_LOGO_EN,
+                    VoltraControlFrames.PARAM_CUSTOM_LOGO_X,
+                    VoltraControlFrames.PARAM_CUSTOM_LOGO_Y,
+                    VoltraControlFrames.PARAM_CUSTOM_LOGO_BG_COLOR,
+                ),
+                label = label,
+            )
+        }
+    }
+
+    private fun queueStartupImageEnableWrite(label: String) {
+        gatt?.let { currentGatt ->
+            Log.d(STARTUP_DEBUG_TAG, "queue $label")
+            sendParamWriteCommand(
+                gatt = currentGatt,
+                command = VoltraControlCommand.UPLOAD_STARTUP_IMAGE,
+                paramId = VoltraControlFrames.PARAM_POWER_OFF_LOGO_EN,
+                valueBytes = byteArrayOf(0x01),
+                label = label,
+            )
+        }
+    }
+
+    private fun queueStartupImageApplyActionWrite(label: String) {
+        gatt?.let { currentGatt ->
+            Log.d(STARTUP_DEBUG_TAG, "queue $label")
+            sendParamWriteCommand(
+                gatt = currentGatt,
+                command = VoltraControlCommand.UPLOAD_STARTUP_IMAGE,
+                paramId = VoltraControlFrames.PARAM_EP_LOGO_APPLY_ACTION,
+                valueBytes = byteArrayOf(0x01),
+                label = label,
+            )
+        }
+    }
+
+    private fun scheduleStartupImageStatePoll(delayMillis: Long, label: String) {
+        val runnable = object : Runnable {
+            override fun run() {
+                startupImageStatePollRunnables.remove(this)
+                queueStartupImageStateRead(label)
+            }
+        }
+        startupImageStatePollRunnables += runnable
+        mainHandler.postDelayed(runnable, delayMillis)
+    }
+
+    private fun cancelStartupImageStatePolls() {
+        startupImageStatePollRunnables.forEach { mainHandler.removeCallbacks(it) }
+        startupImageStatePollRunnables.clear()
+    }
+
+    private fun maybeTraceStartupImageStatePacket(parsedPacket: Any?) {
+        val packet = parsedPacket as? com.technogizguy.voltra.controller.protocol.ParsedVoltraPacket ?: return
+        if (packet.commandId != VoltraControlFrames.CMD_PARAM_READ &&
+            packet.commandId != VoltraControlFrames.CMD_PARAM_WRITE &&
+            packet.commandId != 0x10
+        ) return
+        val trackedParamIds = intArrayOf(
+            VoltraControlFrames.PARAM_EP_LOGO_APPLY_ACTION,
+            VoltraControlFrames.PARAM_POWER_OFF_LOGO_EN,
+            VoltraControlFrames.PARAM_CUSTOM_LOGO_X,
+            VoltraControlFrames.PARAM_CUSTOM_LOGO_Y,
+            VoltraControlFrames.PARAM_CUSTOM_LOGO_BG_COLOR,
+        )
+        val payload = packet.payload
+        val matches = trackedParamIds.any { paramId ->
+            val lo = (paramId and 0xFF).toByte()
+            val hi = ((paramId shr 8) and 0xFF).toByte()
+            (0 until (payload.size - 1)).any { i -> payload[i] == lo && payload[i + 1] == hi }
+        }
+        if (matches) {
+            Log.d(
+                STARTUP_DEBUG_TAG,
+                "state packet cmd=0x${packet.commandId.toString(16)} seq=${packet.sequence16} payload=${payload.toHexString()}",
+            )
+        }
     }
 
     private fun traceIsometricFrame(
@@ -2779,6 +3128,7 @@ class AndroidVoltraClient(
             )
         }
         if (result.command in setOf(
+                VoltraControlCommand.ENTER_CUSTOM_CURVE_MODE,
                 VoltraControlCommand.ENTER_ISOMETRIC_MODE,
                 VoltraControlCommand.LOAD,
                 VoltraControlCommand.UNLOAD,
@@ -2818,6 +3168,7 @@ class AndroidVoltraClient(
         private const val DEFAULT_ISOMETRIC_MAX_DURATION_SECONDS = 15
         private const val MAX_ISOMETRIC_REFRESH_BURST_SECONDS = 20
         private const val ISO_DEBUG_TAG = "VoltraIsoDebug"
+        private const val STARTUP_DEBUG_TAG = "VoltraStartupDebug"
         private const val LEGACY_ISO_DEBUG_STATUS_PRIMARY_OFFSET = 11
         private const val LEGACY_ISO_DEBUG_STATUS_SECONDARY_OFFSET = 13
         private const val LEGACY_ISO_DEBUG_TICK_OFFSET = 27
@@ -2847,6 +3198,7 @@ class AndroidVoltraClient(
             VoltraControlFrames.PARAM_RESISTANCE_EXPERIENCE,
             VoltraControlFrames.PARAM_FITNESS_ASSIST_MODE,
             VoltraControlFrames.PARAM_EP_RESISTANCE_BAND_INVERSE,
+            VoltraControlFrames.PARAM_EP_MAX_ALLOWED_FORCE,
             VoltraControlFrames.PARAM_FITNESS_DAMPER_RATIO_IDX,
             VoltraControlFrames.PARAM_ISOKINETIC_ECC_MODE,
             VoltraControlFrames.PARAM_EP_ISOKINETIC_TARGET_SPEED_MM_S,

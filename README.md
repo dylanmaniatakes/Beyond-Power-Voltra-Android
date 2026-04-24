@@ -70,6 +70,14 @@ The app is intentionally local-first. It focuses on direct device control, local
   - live test telemetry in alpha form
   - on-device test values mirrored into the app as protocol coverage improves
 
+- **Custom Curve**
+  - four-point curve builder
+  - editable graph and sliders
+  - resistance limit
+  - range of motion
+  - local curve presets
+  - load / unload
+
 ### Diagnostics And Export
 
 - live Bluetooth session diagnostics
@@ -91,7 +99,7 @@ The app is intentionally local-first. It focuses on direct device control, local
 Voltra Controller is already usable, but a few areas are still actively being refined:
 
 - Isometric metrics and summaries are still being tuned
-- Custom Curve is visible as a work-in-progress area
+- Custom Curve is now functional in experimental form, with the graph builder and protocol mapping still being refined
 - some advanced settings are still being promoted from alpha behavior to polished release behavior
 - broader workout history and deeper automation features are planned, but not the main focus of the current alpha
 
