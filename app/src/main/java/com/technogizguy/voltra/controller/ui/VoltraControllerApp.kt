@@ -2191,6 +2191,7 @@ private fun DevicePersonalizationCard(
             startupImageUploadStartedAtMillis?.let { command.timestampMillis >= it } != false
     }
     val startupImageUploadFinished = latestStartupImageCommand?.status in setOf(
+        VoltraCommandStatus.SENT,
         VoltraCommandStatus.CONFIRMED,
         VoltraCommandStatus.BLOCKED,
         VoltraCommandStatus.TIMED_OUT,
@@ -2242,7 +2243,11 @@ private fun DevicePersonalizationCard(
 
     LaunchedEffect(latestStartupImageCommand?.timestampMillis, latestStartupImageCommand?.status) {
         if (startupImageUploadStartedAtMillis != null && startupImageUploadFinished) {
-            localMessage = latestStartupImageCommand?.message
+            localMessage = when (latestStartupImageCommand?.status) {
+                VoltraCommandStatus.SENT ->
+                    "Startup image transfer complete. Check the VOLTRA screen."
+                else -> latestStartupImageCommand?.message
+            }
             startupImageUploadStartedAtMillis = null
         }
     }
