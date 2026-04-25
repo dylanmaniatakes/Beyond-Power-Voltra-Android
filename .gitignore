@@ -1,17 +1,38 @@
+# Local build state
 .gradle/
 .kotlin/
 .idea/
+*.iml
 **/build/
 local.properties
+
+# OS/editor noise
 .DS_Store
-captures/raw/
-captures/tmp/
+*.swp
+*.swo
+
+# Generated Android artifacts
+*.apk
+*.aab
+*.apks
+*.idsig
+
+# Local captures, packet traces, and reverse-engineering scratch data
+/capture/
+/captures/
+*.pcap
+*.pcapng
+*.pklg
+*.btsnoop
+*.hci
 *.log
 *.tmp
+*.tar.gz
+
+# Signing and private keys
 keystore.properties
 /keystore/
 *.jks
 *.keystore
 *.p12
 *.pem
-/captures/
