@@ -1,2 +1,0 @@
---------- beginning of system
-04-24 14:19:51.705 D/InsetsController(25525): hide(ime())
