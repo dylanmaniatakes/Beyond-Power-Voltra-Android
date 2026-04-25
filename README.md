@@ -67,8 +67,8 @@ The app is intentionally local-first. It focuses on direct device control, local
 - **Isometric Test**
   - mode entry
   - arm / load and unload
-  - live test telemetry in alpha form
-  - on-device test values mirrored into the app as protocol coverage improves
+  - live test telemetry
+  - on-device test values mirrored into the app
 
 - **Custom Curve**
   - four-point curve builder
@@ -77,6 +77,12 @@ The app is intentionally local-first. It focuses on direct device control, local
   - range of motion
   - local curve presets
   - load / unload
+
+- **Rowing**
+  - Just Row
+  - preset distances
+  - resistance and simulated wear settings
+  - live distance, pace, strokes, SPM, and drive-force graphing
 
 ### Diagnostics And Export
 
@@ -98,10 +104,9 @@ The app is intentionally local-first. It focuses on direct device control, local
 
 Voltra Controller is already usable, but a few areas are still actively being refined:
 
-- Isometric metrics and summaries are still being tuned
-- Custom Curve is now functional in experimental form, with the graph builder and protocol mapping still being refined
-- some advanced settings are still being promoted from alpha behavior to polished release behavior
-- broader workout history and deeper automation features are planned, but not the main focus of the current alpha
+- kg parity across every editor is still being checked
+- some advanced settings are still being promoted from working behavior to polished release behavior
+- broader workout history and deeper automation features are planned, but not the main focus of the current beta
 
 ## Quick Start
 
@@ -195,7 +200,7 @@ Local preferences, last device info, and diagnostics remain on the device unless
 
 ## Safety
 
-This is alpha software controlling a resistance device. Please use common sense and keep early testing conservative.
+This is beta software controlling a resistance device. Please use common sense and keep early testing conservative.
 
 Recommended approach:
 
