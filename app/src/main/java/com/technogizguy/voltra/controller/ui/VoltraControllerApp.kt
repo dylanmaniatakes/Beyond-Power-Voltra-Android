@@ -138,6 +138,7 @@ import com.technogizguy.voltra.controller.mqtt.MqttPublisherState
 import com.technogizguy.voltra.controller.model.VoltraControlCommand
 import com.technogizguy.voltra.controller.model.RawVoltraFrame
 import com.technogizguy.voltra.controller.model.VoltraCommandResult
+import com.technogizguy.voltra.controller.model.VoltraCommandStatus
 import com.technogizguy.voltra.controller.model.VoltraConnectionState
 import com.technogizguy.voltra.controller.model.VoltraGattSnapshot
 import com.technogizguy.voltra.controller.model.VoltraProtocolStatus
@@ -329,6 +330,14 @@ private fun formatPowerWorkoutSummary(
 
 private const val UI_LB_PER_KG = 2.2046226218
 private const val STARTUP_UI_TAG = "VoltraStartupDebug"
+private const val STARTUP_IMAGE_UPLOAD_TIMEOUT_MILLIS = 120_000L
+private val StartupImageChunkProgressRegex = Regex("""startup image chunk\s+(\d+)/(\d+)""", RegexOption.IGNORE_CASE)
+
+private data class StartupImageTransferUiState(
+    val title: String,
+    val detail: String,
+    val progress: Float?,
+)
 
 private fun damperFactorForLevel(level: Int): Int {
     return when (level.coerceIn(1, 10)) {
@@ -2171,10 +2180,29 @@ private fun DevicePersonalizationCard(
     var deviceName by remember(currentDeviceName) { mutableStateOf(currentDeviceName) }
     var localMessage by remember { mutableStateOf<String?>(null) }
     var startupImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var startupImagePreparing by remember { mutableStateOf(false) }
+    var startupImageUploadStartedAtMillis by remember { mutableStateOf<Long?>(null) }
     val latestPersonalizationCommand = state.commandLog.lastOrNull { command ->
         command.command == VoltraControlCommand.SET_DEVICE_NAME ||
             command.command == VoltraControlCommand.UPLOAD_STARTUP_IMAGE
     }
+    val latestStartupImageCommand = state.commandLog.lastOrNull { command ->
+        command.command == VoltraControlCommand.UPLOAD_STARTUP_IMAGE &&
+            startupImageUploadStartedAtMillis?.let { command.timestampMillis >= it } != false
+    }
+    val startupImageUploadFinished = latestStartupImageCommand?.status in setOf(
+        VoltraCommandStatus.CONFIRMED,
+        VoltraCommandStatus.BLOCKED,
+        VoltraCommandStatus.TIMED_OUT,
+        VoltraCommandStatus.FAILED,
+        VoltraCommandStatus.CANCELLED,
+    )
+    val startupImageUploadInProgress = startupImageUploadStartedAtMillis != null && !startupImageUploadFinished
+    val startupImageBusy = startupImagePreparing || startupImageUploadInProgress
+    val startupImageTransferUiState = startupImageTransferUiState(
+        statusMessage = state.statusMessage,
+        command = latestStartupImageCommand,
+    )
     val trimmedName = deviceName.trim()
     val nameError = remember(trimmedName) {
         when {
@@ -2212,20 +2240,41 @@ private fun DevicePersonalizationCard(
         }
     }
 
+    LaunchedEffect(latestStartupImageCommand?.timestampMillis, latestStartupImageCommand?.status) {
+        if (startupImageUploadStartedAtMillis != null && startupImageUploadFinished) {
+            localMessage = latestStartupImageCommand?.message
+            startupImageUploadStartedAtMillis = null
+        }
+    }
+
+    LaunchedEffect(startupImageUploadStartedAtMillis) {
+        val uploadStartedAt = startupImageUploadStartedAtMillis ?: return@LaunchedEffect
+        delay(STARTUP_IMAGE_UPLOAD_TIMEOUT_MILLIS)
+        if (startupImageUploadStartedAtMillis == uploadStartedAt) {
+            localMessage = "Startup image transfer is taking longer than expected. Check the VOLTRA screen before trying again."
+            startupImageUploadStartedAtMillis = null
+        }
+    }
+
     startupImageBitmap?.let { bitmap ->
         StartupImageCropDialog(
             bitmap = bitmap,
+            isProcessing = startupImagePreparing,
             onDismiss = {
+                if (startupImagePreparing) return@StartupImageCropDialog
                 bitmap.recycle()
                 startupImageBitmap = null
             },
             onConfirm = { cropTransform ->
+                if (startupImagePreparing) return@StartupImageCropDialog
+                startupImagePreparing = true
                 Log.d(
                     STARTUP_UI_TAG,
                     "preparing startup image crop zoom=${cropTransform.zoom} x=${cropTransform.offsetXFraction} y=${cropTransform.offsetYFraction}",
                 )
                 scope.launch {
                     runCatching {
+                        localMessage = "Preparing startup image..."
                         val prepared = withContext(Dispatchers.IO) {
                             prepareStartupImage(bitmap, cropTransform)
                         }
@@ -2233,14 +2282,14 @@ private fun DevicePersonalizationCard(
                             STARTUP_UI_TAG,
                             "prepared startup image bytes=${prepared.jpegBytes.size} size=${prepared.width}x${prepared.height}",
                         )
+                        startupImageUploadStartedAtMillis = System.currentTimeMillis()
+                        localMessage = "Sending startup image to the VOLTRA..."
                         onUploadStartupImage(prepared.jpegBytes)
-                        prepared
-                    }.onSuccess { prepared ->
-                        localMessage = "Prepared startup image (${prepared.jpegBytes.size} bytes). Ready to send to the VOLTRA."
                     }.onFailure { error ->
                         Log.w(STARTUP_UI_TAG, "failed to prepare startup image", error)
                         localMessage = error.message ?: "Could not prepare the selected image."
                     }
+                    startupImagePreparing = false
                     bitmap.recycle()
                     startupImageBitmap = null
                 }
@@ -2300,10 +2349,10 @@ private fun DevicePersonalizationCard(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                     )
                 },
-                enabled = isConnected,
+                enabled = isConnected && !startupImageBusy,
                 modifier = Modifier.weight(1f),
             ) {
-                Text("Startup Image")
+                Text(if (startupImageBusy) "Sending..." else "Startup Image")
             }
         }
         Text(
@@ -2311,6 +2360,9 @@ private fun DevicePersonalizationCard(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (startupImageUploadInProgress) {
+            StartupImageTransferProgress(startupImageTransferUiState)
+        }
         localMessage?.let {
             Text(
                 it,
@@ -2328,9 +2380,78 @@ private fun DevicePersonalizationCard(
     }
 }
 
+private fun startupImageTransferUiState(
+    statusMessage: String,
+    command: VoltraCommandResult?,
+): StartupImageTransferUiState {
+    val chunkMatch = StartupImageChunkProgressRegex.find(statusMessage)
+    if (chunkMatch != null) {
+        val chunkIndex = chunkMatch.groupValues.getOrNull(1)?.toIntOrNull()
+        val chunkCount = chunkMatch.groupValues.getOrNull(2)?.toIntOrNull()
+        if (chunkIndex != null && chunkCount != null && chunkCount > 0) {
+            return StartupImageTransferUiState(
+                title = "Sending startup image",
+                detail = "Chunk $chunkIndex of $chunkCount",
+                progress = (chunkIndex.toFloat() / chunkCount.toFloat()).coerceIn(0.02f, 1f),
+            )
+        }
+    }
+    return when {
+        statusMessage.contains("startup image header", ignoreCase = true) ->
+            StartupImageTransferUiState("Starting transfer", "Preparing the VOLTRA for the image.", null)
+        statusMessage.contains("startup image finalize", ignoreCase = true) ->
+            StartupImageTransferUiState("Finalizing image", "The VOLTRA is checking the upload.", null)
+        statusMessage.contains("startup image apply", ignoreCase = true) ->
+            StartupImageTransferUiState("Applying image", "Waiting for the VOLTRA to accept it.", null)
+        command?.status == VoltraCommandStatus.SENT ->
+            StartupImageTransferUiState("Waiting for VOLTRA", "Transfer sent. Watching for confirmation.", null)
+        command?.status == VoltraCommandStatus.QUEUED ->
+            StartupImageTransferUiState("Queued startup image", "Transfer will begin in a moment.", null)
+        else ->
+            StartupImageTransferUiState("Sending startup image", "Keep the phone close to the VOLTRA.", null)
+    }
+}
+
+@Composable
+private fun StartupImageTransferProgress(state: StartupImageTransferUiState) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val progress = state.progress
+        if (progress == null) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(28.dp),
+                strokeWidth = 3.dp,
+            )
+        } else {
+            CircularProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.size(28.dp),
+                strokeWidth = 3.dp,
+                trackColor = MaterialTheme.colorScheme.surface,
+            )
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                state.title,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                state.detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @Composable
 private fun StartupImageCropDialog(
     bitmap: Bitmap,
+    isProcessing: Boolean,
     onDismiss: () -> Unit,
     onConfirm: (StartupImageCropTransform) -> Unit,
 ) {
@@ -2355,6 +2476,7 @@ private fun StartupImageCropDialog(
         confirmButton = {
             Button(
                 onClick = {
+                    if (isProcessing) return@Button
                     onConfirm(
                         StartupImageCropTransform(
                             zoom = zoom,
@@ -2363,12 +2485,16 @@ private fun StartupImageCropDialog(
                         ),
                     )
                 },
+                enabled = !isProcessing,
             ) {
-                Text("Send")
+                Text(if (isProcessing) "Preparing..." else "Send")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isProcessing,
+            ) {
                 Text("Cancel")
             }
         },
