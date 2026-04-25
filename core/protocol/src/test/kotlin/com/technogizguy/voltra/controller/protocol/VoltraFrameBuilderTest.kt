@@ -4,6 +4,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class VoltraFrameBuilderTest {
@@ -190,13 +192,40 @@ class VoltraFrameBuilderTest {
     }
 
     @Test
-    fun buildsCapturedStartupImageHeaderPayloadTrailer() {
+    fun buildsCompactStartupImageHeaderPayloadTrailer() {
         val payload = VoltraControlFrames.startupImageHeaderPayload(
             imageBytes = byteArrayOf(0x01, 0x02, 0x03, 0x04),
             chunkCount = 0x57,
         )
 
-        assertEquals("0201FFFF00000000D002D00200000000CDFB3CB602005700", payload.toHexString())
+        assertEquals("0201FFFF00000000D002D002000000008142040000005700", payload.toHexString())
+    }
+
+    @Test
+    fun buildsStartupImageFingerprintWithSizeLow16AndVoltraCrc16() {
+        val compactPayload = VoltraControlFrames.startupImageHeaderPayload(
+            imageBytes = ByteArray(53_844),
+            chunkCount = 117,
+            trailer = VoltraControlFrames.STARTUP_IMAGE_HEADER_COMPACT_TRAILER,
+        )
+        val largePayload = VoltraControlFrames.startupImageHeaderPayload(
+            imageBytes = ByteArray(155_320),
+            chunkCount = 335,
+            trailer = VoltraControlFrames.STARTUP_IMAGE_HEADER_CUSTOM_PHOTO_TRAILER,
+        )
+
+        assertEquals("A85554D2", compactPayload.copyOfRange(16, 20).toHexString())
+        assertEquals("DB58B85E", largePayload.copyOfRange(16, 20).toHexString())
+    }
+
+    @Test
+    fun selectsLargeCustomPhotoStartupImageHeaderTrailer() {
+        val trailer = VoltraControlFrames.startupImageHeaderTrailer(
+            imageBytes = ByteArray(80_000),
+            chunkCount = 200,
+        )
+
+        assertEquals(VoltraControlFrames.STARTUP_IMAGE_HEADER_CUSTOM_PHOTO_TRAILER, trailer)
     }
 
     @Test
@@ -208,6 +237,55 @@ class VoltraFrameBuilderTest {
         )
 
         assertEquals("550F04A2AA105C002000AA130186F9", frame.toHexString())
+    }
+
+    @Test
+    fun buildsRowingSelectorPayloadsAsZeroBasedIndices() {
+        assertEquals(
+            "0100A75303",
+            VoltraControlFrames.setRowingResistanceLevelPayload(4).toHexString(),
+        )
+        assertEquals(
+            "0100AE5307",
+            VoltraControlFrames.setRowingSimulatedWearLevelPayload(8).toHexString(),
+        )
+    }
+
+    @Test
+    fun buildsCapturedFiftyMeterRowStartScreenSwitchPayload() {
+        assertEquals(
+            "01006551063E0001",
+            VoltraControlFrames.triggerRowStartScreenPayload(50).toHexString(),
+        )
+    }
+
+    @Test
+    fun mapsRowPresetScreenSwitchActions() {
+        assertEquals("01006551043E0001", VoltraControlFrames.selectJustRowScreenPayload().toHexString())
+        assertEquals("01006551033E0001", VoltraControlFrames.triggerRowStartScreenPayload(null).toHexString())
+        assertEquals("01006551063E0001", VoltraControlFrames.triggerRowStartScreenPayload(50).toHexString())
+        assertEquals("01006551073E0001", VoltraControlFrames.triggerRowStartScreenPayload(100).toHexString())
+        assertEquals("01006551083E0001", VoltraControlFrames.triggerRowStartScreenPayload(500).toHexString())
+        assertEquals("01006551093E0001", VoltraControlFrames.triggerRowStartScreenPayload(1000).toHexString())
+        assertEquals("010065510A3E0001", VoltraControlFrames.triggerRowStartScreenPayload(2000).toHexString())
+        assertEquals("010065510B3E0001", VoltraControlFrames.triggerRowStartScreenPayload(5000).toHexString())
+    }
+
+    @Test
+    fun treatsRowingActiveAsLoadedOnlyForRowWorkoutState() {
+        assertFalse(VoltraControlFrames.isLoadedFitnessMode(VoltraControlFrames.FITNESS_MODE_ROWING_ACTIVE))
+        assertFalse(
+            VoltraControlFrames.isLoadEngagedForWorkoutState(
+                VoltraControlFrames.FITNESS_MODE_ROWING_ACTIVE,
+                VoltraControlFrames.WORKOUT_STATE_ACTIVE,
+            ),
+        )
+        assertTrue(
+            VoltraControlFrames.isLoadEngagedForWorkoutState(
+                VoltraControlFrames.FITNESS_MODE_ROWING_ACTIVE,
+                VoltraControlFrames.WORKOUT_STATE_ROWING,
+            ),
+        )
     }
 
     @Test
@@ -263,6 +341,18 @@ class VoltraFrameBuilderTest {
         )
 
         assertEquals("551204C7AA10090020001101008251284FB7", frame.toHexString())
+    }
+
+    @Test
+    fun buildsStandardWorkoutTelemetryRestorePayloads() {
+        assertEquals(
+            "0100835100000000",
+            VoltraControlFrames.resetFitnessDataNotifySubscribePayload().toHexString(),
+        )
+        assertEquals(
+            "0100825100",
+            VoltraControlFrames.resetFitnessDataNotifyHzPayload().toHexString(),
+        )
     }
 
     @Test
@@ -353,6 +443,20 @@ class VoltraFrameBuilderTest {
     }
 
     @Test
+    fun buildsCapturedRowBulkSubscribeFrame() {
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_BULK_PARAM_WRITE,
+            payload = VoltraControlFrames.rowBulkSubscribePayload(),
+            seq = 0x08,
+        )
+
+        assertEquals(
+            "55D304B7AA1008002000AF0241007F5301505301515301A85101525301C75301145301835101245101105401AE5301145401675401DF5401B04F010F5401065101C85301CF5301823E01645301E55201185301125401C45301315401155401A75301863E012D4E01135301893E018252015B5301135401195301815301B65301555301883E01625301215401B05301C95301DE5401873E01E14E010F52018B5401C553018D5301025101415401D454011154016A5001C65301035101853E016F5001115001D253018C54016E5001B753010760",
+            frame.toHexString(),
+        )
+    }
+
+    @Test
     fun buildsExtendedStartupImageChunkFrame() {
         val chunk = ByteArray(VoltraControlFrames.STARTUP_IMAGE_CHUNK_DATA_BYTES) { index ->
             (index and 0xFF).toByte()
@@ -365,13 +469,15 @@ class VoltraFrameBuilderTest {
                 chunkBytes = chunk,
             ),
             seq = 0x13,
+            frameType = VoltraFrameBuilder.FRAME_TYPE_EXTENDED_APP_WRITE,
         )
 
-        assertEquals(224, frame.size)
+        assertEquals(480, frame.size)
         assertEquals(0x55.toByte(), frame[0])
         assertEquals(0xE0.toByte(), frame[1])
-        assertEquals(0x04.toByte(), frame[2])
+        assertEquals(0x05.toByte(), frame[2])
         assertTrue(frame.copyOfRange(14, 14 + chunk.size).contentEquals(chunk))
+        assertTrue(assertNotNull(VoltraPacketParser.parse(frame)).lengthMatches)
     }
 
     @Test

@@ -6,7 +6,7 @@ It was made by using BLE capture data and a measure of vibecoding. I have a meas
 
 Source repository: [github.com/dylanmaniatakes/Beyond-Power-Voltra-Android](https://github.com/dylanmaniatakes/Beyond-Power-Voltra-Android)
 
-This project is currently in a working alpha state. The core control path is live and usable, while some advanced features are still being refined.
+This project is currently in beta. The core control path is live and usable, while some advanced features are still being refined.
 
 ## What Voltra Controller Is
 
@@ -23,7 +23,7 @@ Voltra Controller is designed to feel like a practical daily-use companion for t
 
 The app is intentionally local-first. It focuses on direct device control, local preferences, and user-visible diagnostics instead of account flows or cloud features.
 
-## Current Alpha Features
+## Current Beta Features
 
 ### Core Device Control
 
@@ -226,16 +226,16 @@ Outside the current focus:
 - multi-device tandem workflows
 - polished public release distribution
 
-## Alpha Status
+## Beta Status
 
-This project is now a working alpha:
+This project is now a working beta:
 
 - the app is usable for real device control
 - the supported core modes are live
 - protocol coverage is still expanding
 - polish and validation are still ongoing before a broader release
 
-Play Store publication is now in progress as the alpha settles into a more stable release shape.
+Play Store publication is now in progress as the beta settles into a more stable release shape.
 
 ## Project Docs
 

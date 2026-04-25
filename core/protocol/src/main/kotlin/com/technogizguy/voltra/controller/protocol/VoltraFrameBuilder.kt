@@ -20,7 +20,8 @@ package com.technogizguy.voltra.controller.protocol
 object VoltraFrameBuilder {
 
     private const val MAGIC: Byte = 0x55.toByte()
-    private const val FRAME_TYPE_APP_WRITE: Int = 0x04
+    const val FRAME_TYPE_APP_WRITE: Int = 0x04
+    const val FRAME_TYPE_EXTENDED_APP_WRITE: Int = 0x05
     private const val FIXED_HEADER_BYTES: Int = 11   // magic+len+type+crc8+sender+recv+seq_lo+seq_hi+proto_lo+proto_hi+cmd
     private const val CRC16_BYTES: Int = 2
     /** Sender ID used by the app in all confirmed write frames. */
@@ -50,21 +51,23 @@ object VoltraFrameBuilder {
         sender: Int = APP_SENDER,
         receiver: Int = DEVICE_RECEIVER,
         proto: Int = PROTO,
+        frameType: Int = FRAME_TYPE_APP_WRITE,
     ): ByteArray {
+        require(frameType in 0x00..0xFF) { "VOLTRA frame type must fit in one byte: $frameType" }
         val totalLength = FIXED_HEADER_BYTES + payload.size + CRC16_BYTES
         require(totalLength <= 0xFFFF) { "VOLTRA frame payload too large: length=$totalLength > 65535" }
-        // Official cropped-photo startup-image frames exceed 255 bytes on transport.
-        // The device still expects the frame length byte to carry the low byte of the
-        // real total length, not a saturated 0xFF placeholder.
+        // Official startup-image media chunks exceed 255 bytes on transport.
+        // The device still expects the frame length byte to carry the low byte of
+        // the real total length, paired with frame type 0x05 for those large writes.
         val encodedLength = totalLength and 0xFF
 
-        val headerForCrc8 = byteArrayOf(MAGIC, encodedLength.toByte(), FRAME_TYPE_APP_WRITE.toByte())
+        val headerForCrc8 = byteArrayOf(MAGIC, encodedLength.toByte(), frameType.toByte())
         val crc8Val = crc8(headerForCrc8)
 
         val body = ByteArray(totalLength - CRC16_BYTES).also { buf ->
             buf[0] = MAGIC
             buf[1] = encodedLength.toByte()
-            buf[2] = FRAME_TYPE_APP_WRITE.toByte()
+            buf[2] = frameType.toByte()
             buf[3] = crc8Val.toByte()
             buf[4] = sender.toByte()
             buf[5] = receiver.toByte()

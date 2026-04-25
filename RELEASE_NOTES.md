@@ -1,31 +1,32 @@
 # Release Notes
 
-## Alpha 1.4.5
+## Beta 1.0
 
-Alpha 1.4.5 is a bigger step forward for real VOLTRA control from Android. Several areas that were previously rough, missing, or experimental are now usable enough for regular testing.
+Beta 1.0 marks the point where Voltra Controller moves from alpha experimenting into a much more complete daily-use build. The big theme is simple: more modes now behave like real first-class controls instead of protocol experiments.
 
 ### What's New
 
-- Added Custom Curve support.
-- Added a visual curve builder with four editable points.
-- Added drag-to-edit graph controls, optional fine-tune sliders, resistance range, and range-of-motion controls.
-- Added local Custom Curve presets so good setups can be saved and loaded later.
-- Added live Custom Curve stats for force, reps, and phase while the mode is loaded.
+- Added Row Mode with Just Row, preset distances, live rowing stats, resistance level, simulated wear, and drive-force graphing.
+- Added working startup image upload with photo selection, square crop, and transfer to the VOLTRA.
+- Added Custom Curve controls with editable curve points, range of motion, resistance range, and saved presets.
+- Added current-workout history for supported power/rep modes so recent efforts stay visible during the session.
 
 ### Improved
 
-- Isometric Test is now much closer to the VOLTRA's own results and is usable for strength-test pulls.
-- Custom Curve behavior now tracks the iPad flow more closely, including range of motion and resistance range handling.
-- Mode switching is cleaner across Custom Curve, Isometric Test, and the existing workout modes.
-- Device name changes are implemented and working.
-- Diagnostics are cleaner, with less cross-talk between Custom Curve and Isometric Test data.
+- Isometric Test now mirrors the VOLTRA's own results closely enough for real strength-test use.
+- Row Mode now starts, finishes, resets, and reports metrics cleanly without breaking the older workout counters.
+- Weight Training, Resistance Band, Damper, and Isokinetic counters were cleaned up after the Row Mode work.
+- Device name changes remain implemented and working from the app.
+- The newer mode screens have been tightened up to better match the app's established control style.
 
-### Still In Progress
+### Fixed
 
-- Startup image upload is still under development. The app now labels it that way and includes the newer crop workflow, but the VOLTRA still does not reliably apply the image.
-- Custom Curve is functional, but still considered alpha while more iPad behavior is compared against Android.
-- Row Mode has fresh capture notes, but it is not ready as a user-facing workout mode yet.
+- Fixed startup image crashes and the missing VOLTRA-side startup image apply path.
+- Fixed stale row metrics carrying across starts, finishes, and preset changes.
+- Fixed rep/set/phase counter regressions after entering Row Mode.
+- Fixed several BLE parsing collisions where one workout mode could accidentally consume another mode's live data.
+- Reduced jitter and state churn in newer controls like rowing resistance, simulated wear, and Custom Curve settings.
 
 ### Notes
 
-This release includes a lot of protocol cleanup under the hood, but the important part is simple: Isometric Test is finally useful, Custom Curve is now testable, and personalization is moving forward.
+This build is still local-first and capture-driven, but it now covers the major VOLTRA features we have working captures for: core training modes, Isometric Test, Custom Curve, Row Mode, device rename, and startup images.

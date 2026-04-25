@@ -4,6 +4,9 @@ import com.technogizguy.voltra.controller.model.RawFrameDirection
 import com.technogizguy.voltra.controller.model.RawVoltraFrame
 import com.technogizguy.voltra.controller.model.VoltraReading
 import com.technogizguy.voltra.controller.model.VoltraSafetyState
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 object VoltraNotificationParser {
     fun rawFrame(
@@ -75,6 +78,12 @@ object VoltraNotificationParser {
         }
         val quickCableAdjustment = params.uint8(PARAM_QUICK_CABLE_ADJUSTMENT)?.let { it == 1 }
         val damperLevelIndex = params.uint8(PARAM_FITNESS_DAMPER_RATIO_IDX)
+        val rowingResistanceLevel = VoltraControlFrames.rowingSelectorDisplayLevel(
+            params.uint8(PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX),
+        )
+        val rowingSimulatedWearLevel = VoltraControlFrames.rowingSelectorDisplayLevel(
+            params.uint8(PARAM_EP_ROW_CHAIN_GEAR),
+        )
         val assistModeEnabled = params.uint8(PARAM_FITNESS_ASSIST_MODE)?.let {
             when (it) {
                 1 -> true
@@ -100,11 +109,40 @@ object VoltraNotificationParser {
         val workoutState = params.uint8(PARAM_FITNESS_WORKOUT_STATE)
         val currentWasInIsometric = current.workoutMode?.startsWith("Isometric Test") == true
         val currentWasInCustomCurve = current.workoutMode?.startsWith("Custom Curve") == true
+        val currentWasInRowing = current.workoutMode?.startsWith("Rowing") == true
+        val currentWasInPowerWorkout = current.workoutMode?.startsWith("Damper") == true ||
+            current.workoutMode?.startsWith("Isokinetic") == true
         val currentModeIsKnownNonIsometric = current.workoutMode != null && !currentWasInIsometric
-        val packetIsIsometric = workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ||
-            (workoutState == null && !currentModeIsKnownNonIsometric)
+        val rowScreenStateSeen = appCurrentScreenId == VoltraControlFrames.ROWING_SCREEN_ID &&
+            fitnessOngoingUi == VoltraControlFrames.ROWING_ONGOING_UI
+        val currentHasLiveRowScreen = current.appCurrentScreenId == VoltraControlFrames.ROWING_SCREEN_ID &&
+            current.fitnessOngoingUi == VoltraControlFrames.ROWING_ONGOING_UI
+        val packetIsNativeRowState = workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING ||
+            VoltraControlFrames.normalizedFitnessMode(fitnessMode) == VoltraControlFrames.FITNESS_MODE_ROWING_ACTIVE
+        val packetDeclaresNonRowWorkout = workoutState != null &&
+            workoutState != VoltraControlFrames.WORKOUT_STATE_ROWING
+        val packetHasRowingTelemetry =
+            (
+                currentWasInRowing && currentHasLiveRowScreen && !packetDeclaresNonRowWorkout ||
+                    rowScreenStateSeen ||
+                    packetIsNativeRowState
+                ) &&
+                (packet.hasNativeRowingSummaryPayload() || packet.hasRowingTelemetryPayload())
+        val rowWorkoutStateBounce = false
+        val packetIsRowing = packetIsNativeRowState ||
+            rowScreenStateSeen ||
+            packetHasRowingTelemetry ||
+            rowWorkoutStateBounce
+        val packetIsIsometric = !packetIsRowing &&
+            (
+                workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ||
+                    (workoutState == null && !currentModeIsKnownNonIsometric)
+                )
         val packetIsCustomCurve = workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE ||
             (workoutState == null && currentWasInCustomCurve)
+        val packetIsPowerWorkout = workoutState == VoltraControlFrames.WORKOUT_STATE_DAMPER ||
+            workoutState == VoltraControlFrames.WORKOUT_STATE_ISOKINETIC ||
+            (workoutState == null && currentWasInPowerWorkout)
         val isometricTelemetry = if (packetIsIsometric) {
             parseIsometricTelemetry(packet, current, nowMillis)
         } else {
@@ -115,16 +153,57 @@ object VoltraNotificationParser {
         } else {
             null
         }
-        val workoutMode = workoutModeLabel(
-            mode = fitnessMode,
-            workoutState = workoutState,
-        )
+        val workoutMode = if (rowWorkoutStateBounce) {
+            current.workoutMode
+        } else {
+            workoutModeLabel(
+                mode = fitnessMode,
+                workoutState = workoutState,
+            )?.let {
+                if (packetIsRowing) {
+                    rowWorkoutModeLabel(fitnessMode)
+                } else {
+                    it
+                }
+            }
+        }
         val repTelemetry = parseRepTelemetry(packet)
         val customCurveTelemetry = if (packetIsCustomCurve) {
             parseCustomCurveTelemetry(packet, current)
         } else {
             null
         }
+        val rowingTelemetry = if (packetIsRowing) {
+            parseRowingTelemetry(packet, current, nowMillis)
+        } else {
+            null
+        }
+        val powerWorkoutSummary = if (packetIsPowerWorkout) {
+            parsePowerWorkoutSummary(packet)
+        } else {
+            null
+        }
+        val powerWorkoutTelemetry = if (packetIsPowerWorkout) {
+            parsePowerWorkoutTelemetry(packet)
+        } else {
+            null
+        }
+        val currentHasRowingTelemetry =
+            current.rowingDistanceMeters != null ||
+                current.rowingElapsedMillis != null ||
+                current.rowingPace500Millis != null ||
+                current.rowingAveragePace500Millis != null ||
+                current.rowingStrokeRateSpm != null ||
+                current.rowingDriveForceLb != null ||
+                current.rowingDistanceSamplesMeters.isNotEmpty() ||
+                current.rowingForceSamplesLb.isNotEmpty() ||
+                (current.repCount ?: 0) > 0
+        val readyRowingWithoutTelemetry =
+            packetIsRowing &&
+                workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING &&
+                VoltraControlFrames.isReadyForWorkoutState(fitnessMode, workoutState) &&
+                rowingTelemetry == null &&
+                !currentHasRowingTelemetry
 
         if (
             serial == null &&
@@ -146,6 +225,8 @@ object VoltraNotificationParser {
             resistanceExperienceIntense == null &&
             quickCableAdjustment == null &&
             damperLevelIndex == null &&
+            rowingResistanceLevel == null &&
+            rowingSimulatedWearLevel == null &&
             assistModeEnabled == null &&
             weightTrainingExtraMode == null &&
             appCurrentScreenId == null &&
@@ -165,12 +246,31 @@ object VoltraNotificationParser {
             isometricWaveform == null &&
             workoutMode == null &&
             repTelemetry == null &&
-            customCurveTelemetry == null
+            customCurveTelemetry == null &&
+            rowingTelemetry == null &&
+            powerWorkoutSummary == null &&
+            powerWorkoutTelemetry == null
         ) {
             return current
         }
 
         val leavingIsometric = workoutState != null && workoutState != VoltraControlFrames.WORKOUT_STATE_ISOMETRIC
+        val enteringFreshPowerWorkout =
+            (
+                workoutState == VoltraControlFrames.WORKOUT_STATE_DAMPER ||
+                    workoutState == VoltraControlFrames.WORKOUT_STATE_ISOKINETIC
+                ) &&
+                !currentWasInPowerWorkout &&
+                powerWorkoutSummary == null
+        val leavingPowerWorkout = currentWasInPowerWorkout &&
+            workoutState != null &&
+            workoutState != VoltraControlFrames.WORKOUT_STATE_DAMPER &&
+            workoutState != VoltraControlFrames.WORKOUT_STATE_ISOKINETIC
+        val leavingRowing = currentWasInRowing &&
+            workoutState != null &&
+            workoutState != VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
+            workoutState != VoltraControlFrames.WORKOUT_STATE_ROWING &&
+            !rowWorkoutStateBounce
         val retainCompletedIsometricAttempt = current.isometricWaveformSamplesN.isNotEmpty() ||
             current.isometricPeakRelativeForcePercent != null
         val hasCollectedIsometricLiveSample = current.isometricWaveformSamplesN.isNotEmpty() ||
@@ -270,6 +370,62 @@ object VoltraNotificationParser {
             bodyWeightN = mergedIsometricBodyWeightN,
             metricsType = mergedIsometricMetricsType,
         )
+        val powerPreviousForceTenths = current.workoutLiveForceLb
+            ?.let { (it * POWER_WORKOUT_FORCE_TENTHS_PER_LB).roundToInt() }
+        val powerStartThresholdTenths = powerWorkoutTelemetry?.let {
+            powerWorkoutStartThresholdTenths(
+                previousForceTenthsLb = powerPreviousForceTenths,
+                currentForceTenthsLb = it.forceTenthsLb,
+                hasActivePull = current.workoutPullStartTick != null,
+                phase = repTelemetry?.phase ?: current.repPhase,
+            )
+        }
+        val powerCrossedStartThreshold = powerStartThresholdTenths != null
+        val powerInterpolatedStartTick = if (powerWorkoutTelemetry != null && powerCrossedStartThreshold) {
+            interpolatePowerWorkoutStartTick(
+                startForceTenthsLb = powerStartThresholdTenths,
+                previousForceTenthsLb = powerPreviousForceTenths,
+                previousTick = current.workoutLiveTick,
+                currentForceTenthsLb = powerWorkoutTelemetry.forceTenthsLb,
+                currentTick = powerWorkoutTelemetry.tick,
+            )
+        } else {
+            null
+        }
+        val powerResetPull =
+            powerWorkoutTelemetry != null &&
+                powerWorkoutTelemetry.forceTenthsLb <= POWER_WORKOUT_RESET_FORCE_TENTHS_LB &&
+                current.workoutPullStartTick != null &&
+                current.workoutPeakForceTick != null
+        val resolvedPowerStartTick = when {
+            leavingPowerWorkout || enteringFreshPowerWorkout -> null
+            powerCrossedStartThreshold -> powerInterpolatedStartTick
+            powerResetPull -> null
+            else -> current.workoutPullStartTick
+        }
+        val activePowerStartTick = when {
+            powerCrossedStartThreshold -> powerInterpolatedStartTick
+            else -> current.workoutPullStartTick
+        }
+        val currentPowerPeakForceLb = current.workoutPeakForceLb
+        val shouldUseLivePowerPeak =
+            powerWorkoutTelemetry != null &&
+                activePowerStartTick != null &&
+                powerWorkoutTelemetry.forceTenthsLb >= POWER_WORKOUT_PRIMARY_START_FORCE_TENTHS_LB &&
+                (
+                    powerCrossedStartThreshold ||
+                        current.workoutPeakForceTick == null ||
+                        currentPowerPeakForceLb == null ||
+                        powerWorkoutTelemetry.forceLb > currentPowerPeakForceLb
+                    )
+        val livePowerTimeToPeakMillis = if (shouldUseLivePowerPeak) {
+            (powerWorkoutTelemetry.tick - activePowerStartTick).coerceAtLeast(0L)
+        } else {
+            null
+        }
+        val summaryPowerTimeToPeakMillis = powerWorkoutSummary?.correctedTimeToPeakMillis(
+            currentMillis = current.workoutTimeToPeakMillis,
+        )
 
         return current.copy(
             serialNumber = serial ?: current.serialNumber,
@@ -278,7 +434,7 @@ object VoltraNotificationParser {
             activationState = activationState ?: current.activationState,
             cableLengthCm = cableLengthCm ?: current.cableLengthCm,
             cableOffsetCm = cableOffsetCm ?: current.cableOffsetCm,
-            forceLb = customCurveTelemetry?.forceLb ?: wireWeightLb ?: current.forceLb,
+            forceLb = rowingTelemetry?.forceLb ?: customCurveTelemetry?.forceLb ?: wireWeightLb ?: current.forceLb,
             weightLb = baseWeightLb ?: current.weightLb,
             resistanceBandMaxForceLb = resistanceBandMaxForceLb ?: current.resistanceBandMaxForceLb,
             resistanceBandLengthCm = resistanceBandLengthCm ?: current.resistanceBandLengthCm,
@@ -288,10 +444,18 @@ object VoltraNotificationParser {
             resistanceExperienceIntense = resistanceExperienceIntense ?: current.resistanceExperienceIntense,
             quickCableAdjustment = quickCableAdjustment ?: current.quickCableAdjustment,
             damperLevelIndex = damperLevelIndex ?: current.damperLevelIndex,
+            rowingResistanceLevel = rowingResistanceLevel ?: current.rowingResistanceLevel,
+            rowingSimulatedWearLevel = rowingSimulatedWearLevel ?: current.rowingSimulatedWearLevel,
             assistModeEnabled = assistModeEnabled ?: current.assistModeEnabled,
             weightTrainingExtraMode = weightTrainingExtraMode ?: current.weightTrainingExtraMode,
-            appCurrentScreenId = appCurrentScreenId ?: current.appCurrentScreenId,
-            fitnessOngoingUi = fitnessOngoingUi ?: current.fitnessOngoingUi,
+            appCurrentScreenId = when {
+                leavingRowing && appCurrentScreenId == null -> null
+                else -> appCurrentScreenId ?: current.appCurrentScreenId
+            },
+            fitnessOngoingUi = when {
+                leavingRowing && fitnessOngoingUi == null -> null
+                else -> fitnessOngoingUi ?: current.fitnessOngoingUi
+            },
             chainsWeightLb = chainsWeightLb ?: current.chainsWeightLb,
             eccentricWeightLb = eccentricWeightLb ?: current.eccentricWeightLb,
             inverseChains = inverseChains ?: current.inverseChains,
@@ -357,10 +521,127 @@ object VoltraNotificationParser {
             },
             isometricWaveformSamplesN = isometricWaveformSamples,
             isometricWaveformLastChunkIndex = isometricWaveformLastChunkIndex,
-            setCount = customCurveTelemetry?.setCount ?: repTelemetry?.setCount ?: current.setCount,
-            repCount = customCurveTelemetry?.repCount ?: repTelemetry?.count ?: current.repCount,
-            repPhase = customCurveTelemetry?.phase ?: repTelemetry?.phase ?: current.repPhase,
-            workoutMode = workoutMode ?: current.workoutMode,
+            rowingDistanceMeters = when {
+                readyRowingWithoutTelemetry -> null
+                leavingRowing -> null
+                rowingTelemetry?.distanceMeters != null -> rowingTelemetry.distanceMeters
+                else -> current.rowingDistanceMeters
+            },
+            rowingElapsedMillis = when {
+                readyRowingWithoutTelemetry -> null
+                leavingRowing -> null
+                rowingTelemetry?.elapsedMillis != null -> rowingTelemetry.elapsedMillis
+                else -> current.rowingElapsedMillis
+            },
+            rowingPace500Millis = when {
+                readyRowingWithoutTelemetry -> null
+                leavingRowing -> null
+                rowingTelemetry?.pace500Millis != null -> rowingTelemetry.pace500Millis
+                else -> current.rowingPace500Millis
+            },
+            rowingAveragePace500Millis = when {
+                readyRowingWithoutTelemetry -> null
+                leavingRowing -> null
+                rowingTelemetry?.averagePace500Millis != null -> rowingTelemetry.averagePace500Millis
+                else -> current.rowingAveragePace500Millis
+            },
+            rowingStrokeRateSpm = when {
+                readyRowingWithoutTelemetry -> null
+                leavingRowing -> null
+                rowingTelemetry?.strokeRateSpm != null -> rowingTelemetry.strokeRateSpm
+                else -> current.rowingStrokeRateSpm
+            },
+            rowingDriveForceLb = when {
+                readyRowingWithoutTelemetry -> null
+                leavingRowing -> null
+                rowingTelemetry?.forceLb != null -> rowingTelemetry.forceLb
+                else -> current.rowingDriveForceLb
+            },
+            rowingTelemetryStartMillis = when {
+                readyRowingWithoutTelemetry -> null
+                leavingRowing -> null
+                rowingTelemetry?.startMillis != null -> rowingTelemetry.startMillis
+                else -> current.rowingTelemetryStartMillis
+            },
+            rowingLastStrokeStartMillis = when {
+                readyRowingWithoutTelemetry -> null
+                leavingRowing -> null
+                rowingTelemetry?.strokeStartMillis != null -> rowingTelemetry.strokeStartMillis
+                else -> current.rowingLastStrokeStartMillis
+            },
+            rowingDistanceSamplesMeters = when {
+                readyRowingWithoutTelemetry -> emptyList()
+                leavingRowing -> emptyList()
+                rowingTelemetry?.distanceSamplesMeters != null -> rowingTelemetry.distanceSamplesMeters
+                else -> current.rowingDistanceSamplesMeters
+            },
+            rowingForceSamplesLb = when {
+                readyRowingWithoutTelemetry -> emptyList()
+                leavingRowing -> emptyList()
+                rowingTelemetry?.forceSamplesLb != null -> rowingTelemetry.forceSamplesLb
+                else -> current.rowingForceSamplesLb
+            },
+            rowingForceLastChunkIndex = when {
+                readyRowingWithoutTelemetry -> null
+                leavingRowing -> null
+                rowingTelemetry?.lastChunkIndex != null -> rowingTelemetry.lastChunkIndex
+                else -> current.rowingForceLastChunkIndex
+            },
+            workoutPeakForceLb = when {
+                leavingPowerWorkout || enteringFreshPowerWorkout -> null
+                powerWorkoutSummary?.peakForceLb != null -> powerWorkoutSummary.peakForceLb
+                shouldUseLivePowerPeak -> powerWorkoutTelemetry.forceLb
+                else -> current.workoutPeakForceLb
+            },
+            workoutPeakPowerWatts = when {
+                leavingPowerWorkout || enteringFreshPowerWorkout -> null
+                powerCrossedStartThreshold -> null
+                powerWorkoutSummary?.peakPowerWatts != null -> powerWorkoutSummary.peakPowerWatts
+                else -> current.workoutPeakPowerWatts
+            },
+            workoutTimeToPeakMillis = when {
+                leavingPowerWorkout || enteringFreshPowerWorkout -> null
+                livePowerTimeToPeakMillis != null -> livePowerTimeToPeakMillis
+                summaryPowerTimeToPeakMillis != null -> summaryPowerTimeToPeakMillis
+                powerWorkoutSummary != null -> current.workoutTimeToPeakMillis
+                else -> current.workoutTimeToPeakMillis
+            },
+            workoutLiveForceLb = when {
+                leavingPowerWorkout || enteringFreshPowerWorkout -> null
+                powerWorkoutTelemetry != null -> powerWorkoutTelemetry.forceLb
+                else -> current.workoutLiveForceLb
+            },
+            workoutLiveTick = when {
+                leavingPowerWorkout || enteringFreshPowerWorkout -> null
+                powerWorkoutTelemetry != null -> powerWorkoutTelemetry.tick
+                else -> current.workoutLiveTick
+            },
+            workoutPullStartTick = resolvedPowerStartTick,
+            workoutPeakForceTick = when {
+                leavingPowerWorkout || enteringFreshPowerWorkout -> null
+                powerResetPull -> null
+                shouldUseLivePowerPeak -> powerWorkoutTelemetry.tick
+                else -> current.workoutPeakForceTick
+            },
+            setCount = when {
+                leavingRowing -> repTelemetry?.setCount ?: 0
+                readyRowingWithoutTelemetry -> 0
+                else -> rowingTelemetry?.setCount ?: customCurveTelemetry?.setCount ?: repTelemetry?.setCount ?: current.setCount
+            },
+            repCount = when {
+                leavingRowing -> repTelemetry?.count ?: 0
+                readyRowingWithoutTelemetry -> 0
+                else -> rowingTelemetry?.repCount ?: customCurveTelemetry?.repCount ?: repTelemetry?.count ?: current.repCount
+            },
+            repPhase = when {
+                leavingRowing -> repTelemetry?.phase ?: "Ready"
+                readyRowingWithoutTelemetry -> "Ready"
+                else -> rowingTelemetry?.phase ?: customCurveTelemetry?.phase ?: repTelemetry?.phase ?: current.repPhase
+            },
+            workoutMode = when {
+                leavingRowing && workoutMode == null -> null
+                else -> workoutMode ?: current.workoutMode
+            },
             lastUpdatedMillis = nowMillis,
         )
     }
@@ -486,6 +767,8 @@ object VoltraNotificationParser {
     private const val PARAM_MC_DEFAULT_OFFLEN_CM = VoltraControlFrames.PARAM_MC_DEFAULT_OFFLEN_CM
     private const val PARAM_FITNESS_WORKOUT_STATE = VoltraControlFrames.PARAM_FITNESS_WORKOUT_STATE
     private const val PARAM_FITNESS_DAMPER_RATIO_IDX = VoltraControlFrames.PARAM_FITNESS_DAMPER_RATIO_IDX
+    private const val PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX = VoltraControlFrames.PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX
+    private const val PARAM_EP_ROW_CHAIN_GEAR = VoltraControlFrames.PARAM_EP_ROW_CHAIN_GEAR
     private const val PARAM_FITNESS_ASSIST_MODE = VoltraControlFrames.PARAM_FITNESS_ASSIST_MODE
     private const val PARAM_APP_CUR_SCR_ID = VoltraControlFrames.PARAM_APP_CUR_SCR_ID
     private const val PARAM_FITNESS_ONGOING_UI = VoltraControlFrames.PARAM_FITNESS_ONGOING_UI
@@ -549,6 +832,53 @@ object VoltraNotificationParser {
     private const val CUSTOM_CURVE_REP_ACTIVE_MULTIPLIER = 1.2
     private const val CUSTOM_CURVE_REP_RESET_MARGIN_LB = 1.0
     private const val CUSTOM_CURVE_REP_DIRECTION_DEADBAND_LB = 0.4
+    private const val ROWING_STATUS_TYPE = 0x92
+    private const val ROWING_WAVEFORM_TYPE = 0x93
+    private const val ROWING_SUMMARY_TYPE = 0x95
+    private const val ROWING_SUMMARY_LENGTH_MARKER = 0x25
+    private const val ROWING_SUMMARY_MIN_BYTES = 39
+    private const val ROWING_SUMMARY_STROKE_RATE_SPM_OFFSET = 2
+    private const val ROWING_SUMMARY_CURRENT_PACE_TENTH_SECONDS_OFFSET = 3
+    private const val ROWING_SUMMARY_AVERAGE_PACE_TENTH_SECONDS_OFFSET = 7
+    private const val ROWING_SUMMARY_STROKE_COUNT_CENTI_OFFSET = 19
+    private const val ROWING_SUMMARY_LEGACY_STROKE_RATE_CENTI_SPM_OFFSET = 23
+    private const val ROWING_SUMMARY_DISTANCE_METERS_OFFSET = 35
+    private const val ROWING_AA92_DISTANCE_OFFSET = 11
+    private const val ROWING_FORCE_TENTHS_PER_LB = 10.0
+    private const val POWER_WORKOUT_SUMMARY_TYPE = 0x85
+    private const val POWER_WORKOUT_SUMMARY_LENGTH_MARKER = 0x5F
+    private const val POWER_WORKOUT_SUMMARY_MIN_BYTES = 97
+    private const val POWER_WORKOUT_SUMMARY_PEAK_FORCE_TENTHS_LB_OFFSET = 17
+    private const val POWER_WORKOUT_SUMMARY_PEAK_POWER_WATTS_OFFSET = 21
+    private const val POWER_WORKOUT_SUMMARY_TIME_TO_PEAK_CENTISECONDS_OFFSET = 69
+    private const val POWER_WORKOUT_REP_SUMMARY_TYPE = 0x82
+    private const val POWER_WORKOUT_REP_SUMMARY_LENGTH_MARKER = 0x3B
+    private const val POWER_WORKOUT_REP_SUMMARY_MIN_BYTES = 61
+    private const val POWER_WORKOUT_REP_SUMMARY_TIME_TO_PEAK_CENTISECONDS_OFFSET = 22
+    private const val POWER_WORKOUT_LIVE_TYPE = 0x81
+    private const val POWER_WORKOUT_LIVE_LENGTH_MARKER = 0x2B
+    private const val POWER_WORKOUT_LIVE_MIN_BYTES = 45
+    private const val POWER_WORKOUT_LIVE_FORCE_TENTHS_LB_OFFSET = 11
+    private const val POWER_WORKOUT_LIVE_TICK_OFFSET = 27
+    private const val POWER_WORKOUT_FORCE_TENTHS_PER_LB = 10.0
+    private const val POWER_WORKOUT_PRIMARY_START_FORCE_TENTHS_LB = 60
+    private const val POWER_WORKOUT_FALLBACK_START_FORCE_TENTHS_LB = 100
+    private const val POWER_WORKOUT_RESET_FORCE_TENTHS_LB = 50
+    private const val ROWING_ACTIVE_FORCE_LB = 3.0
+    private const val ROWING_RESET_FORCE_LB = 1.5
+    private const val ROWING_FORCE_DIRECTION_DEADBAND_LB = 0.4
+    private const val ROWING_B4_SHORT_BYTES = 8
+    private const val ROWING_WAVEFORM_HEADER_BYTES = 6
+    private const val MAX_REASONABLE_ROWING_FORCE_TENTHS_LB = 4_000
+    private const val MAX_REASONABLE_ROWING_DISTANCE_CENTIMETERS = 10_000_000
+    private const val MAX_REASONABLE_ROWING_ELAPSED_MILLIS = 24 * 60 * 60 * 1000
+    private const val MAX_REASONABLE_ROWING_PACE_CENTISECONDS = 360_000
+    private const val MAX_REASONABLE_POWER_WORKOUT_FORCE_TENTHS_LB = 5_000
+    private const val MAX_REASONABLE_POWER_WORKOUT_WATTS = 5_000
+    private const val MAX_REASONABLE_POWER_WORKOUT_TIME_TO_PEAK_CENTISECONDS = 3_000
+    private const val POWER_WORKOUT_SUMMARY_TIME_CORRECTION_MAX_DELTA_MILLIS = 150L
+    private const val MAX_ROWING_FORCE_SAMPLES = 1_200
+    private const val MAX_ROWING_DISTANCE_SAMPLES = 1_200
     private const val MAX_REASONABLE_SET_COUNT = 1_000
     private const val MAX_REASONABLE_REP_COUNT = 10_000
     private const val MAX_REASONABLE_CUSTOM_CURVE_FORCE_TENTHS_LB = 2_000
@@ -580,6 +910,7 @@ object VoltraNotificationParser {
     private val TELEMETRY_ISOMETRIC_COARSE_LIVE_FORCE_RANGE_N = 1.0..MAX_REASONABLE_ISOMETRIC_FORCE_N
     private val TELEMETRY_ISOMETRIC_WAVEFORM_MARKERS = setOf(0xCC, 0x82, 0xA8)
     private val CUSTOM_CURVE_ACTIVE_PHASES = setOf("Pull", "Return")
+    private val ROWING_ACTIVE_PHASES = setOf("Drive", "Recovery")
 
     private fun ParsedVoltraPacket.decodeParams(): Map<Int, Number> {
         if (commandId != CMD_ASYNC_STATE && commandId != CMD_BULK_REGISTER) return emptyMap()
@@ -622,6 +953,7 @@ object VoltraNotificationParser {
         val normalizedMode = VoltraControlFrames.normalizedFitnessMode(mode)
         val stateLabel = when (workoutState) {
             VoltraControlFrames.WORKOUT_STATE_RESISTANCE_BAND -> "Resistance Band"
+            VoltraControlFrames.WORKOUT_STATE_ROWING -> "Rowing"
             VoltraControlFrames.WORKOUT_STATE_DAMPER -> "Damper"
             VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE -> "Custom Curve"
             VoltraControlFrames.WORKOUT_STATE_ISOKINETIC -> "Isokinetic"
@@ -642,6 +974,7 @@ object VoltraNotificationParser {
         val modeText = when (normalizedMode) {
             VoltraControlFrames.FITNESS_MODE_STRENGTH_READY -> "Strength ready"
             VoltraControlFrames.FITNESS_MODE_STRENGTH_LOADED -> "Strength loaded"
+            VoltraControlFrames.FITNESS_MODE_ROWING_ACTIVE -> "Rowing"
             null -> "Unknown mode"
             else -> "Fitness mode $mode"
         }
@@ -656,6 +989,36 @@ object VoltraNotificationParser {
             }
         }
         return "$modeText, $stateText"
+    }
+
+    private fun rowWorkoutModeLabel(mode: Int?): String {
+        val modeText = when {
+            VoltraControlFrames.isLoadEngagedForWorkoutState(mode, VoltraControlFrames.WORKOUT_STATE_ROWING) -> "Live"
+            VoltraControlFrames.isLoadEngagedForWorkoutState(mode, VoltraControlFrames.WORKOUT_STATE_ISOMETRIC) -> "Loaded"
+            VoltraControlFrames.isReadyForWorkoutState(mode, VoltraControlFrames.WORKOUT_STATE_ROWING) -> "Ready"
+            VoltraControlFrames.isReadyForWorkoutState(mode, VoltraControlFrames.WORKOUT_STATE_ISOMETRIC) -> "Ready"
+            mode == null -> "state unknown"
+            else -> "mode $mode"
+        }
+        return "Rowing, $modeText"
+    }
+
+    private fun ParsedVoltraPacket.hasRowingTelemetryPayload(): Boolean {
+        return when (commandId) {
+            CMD_ISOMETRIC_STREAM -> payload.size == ROWING_B4_SHORT_BYTES
+            CMD_TELEMETRY -> when (payload.firstOrNull()?.u8()) {
+                ROWING_STATUS_TYPE, ROWING_WAVEFORM_TYPE, ROWING_SUMMARY_TYPE -> true
+                else -> false
+            }
+            else -> false
+        }
+    }
+
+    private fun ParsedVoltraPacket.hasNativeRowingSummaryPayload(): Boolean {
+        return commandId == CMD_TELEMETRY &&
+            payload.size >= ROWING_SUMMARY_MIN_BYTES &&
+            payload[0].u8() == ROWING_SUMMARY_TYPE &&
+            payload[1].u8() == ROWING_SUMMARY_LENGTH_MARKER
     }
 
     private fun isWorkoutSessionActive(workoutState: Int): Boolean {
@@ -741,6 +1104,407 @@ object VoltraNotificationParser {
         if (payload[1].u8() != TELEMETRY_ISOMETRIC_SUMMARY_LENGTH_MARKER) return null
         if (payload[2].u8() != VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE) return null
         return payload.u16le(CUSTOM_CURVE_VENDOR_FORCE_OFFSET)
+    }
+
+    private fun parseRowingTelemetry(
+        packet: ParsedVoltraPacket,
+        current: VoltraReading,
+        nowMillis: Long,
+    ): RowingTelemetry? {
+        val startMillis = current.rowingTelemetryStartMillis ?: nowMillis
+        return when (packet.commandId) {
+            CMD_ISOMETRIC_STREAM -> parseRowingB4Telemetry(packet.payload, current, startMillis, nowMillis)
+            CMD_TELEMETRY -> when (packet.payload.firstOrNull()?.u8()) {
+                ROWING_STATUS_TYPE -> parseRowingStatusTelemetry(packet.payload, current, startMillis, nowMillis)
+                ROWING_WAVEFORM_TYPE -> parseRowingWaveformTelemetry(packet.payload, current, startMillis, nowMillis)
+                ROWING_SUMMARY_TYPE -> parseRowingSummaryTelemetry(packet.payload, current, startMillis)
+                else -> null
+            }
+            else -> null
+        }
+    }
+
+    private fun parsePowerWorkoutSummary(packet: ParsedVoltraPacket): PowerWorkoutSummary? {
+        if (packet.commandId != CMD_TELEMETRY) return null
+        val payload = packet.payload
+        return when (payload.firstOrNull()?.u8()) {
+            POWER_WORKOUT_REP_SUMMARY_TYPE -> parsePowerWorkoutRepSummary(payload)
+            POWER_WORKOUT_SUMMARY_TYPE -> parsePowerWorkoutFinalSummary(payload)
+            else -> null
+        }
+    }
+
+    private fun parsePowerWorkoutFinalSummary(payload: ByteArray): PowerWorkoutSummary? {
+        if (payload.size < POWER_WORKOUT_SUMMARY_MIN_BYTES) return null
+        if (payload[1].u8() != POWER_WORKOUT_SUMMARY_LENGTH_MARKER) return null
+
+        val peakForceTenthsLb = payload.u16le(POWER_WORKOUT_SUMMARY_PEAK_FORCE_TENTHS_LB_OFFSET)
+            .takeIf { it in 0..MAX_REASONABLE_POWER_WORKOUT_FORCE_TENTHS_LB }
+        val peakPowerWatts = payload.u16le(POWER_WORKOUT_SUMMARY_PEAK_POWER_WATTS_OFFSET)
+            .takeIf { it in 0..MAX_REASONABLE_POWER_WORKOUT_WATTS }
+        val timeToPeakMillis = payload.u16le(POWER_WORKOUT_SUMMARY_TIME_TO_PEAK_CENTISECONDS_OFFSET)
+            .takeIf { it in 1..MAX_REASONABLE_POWER_WORKOUT_TIME_TO_PEAK_CENTISECONDS }
+            ?.times(10L)
+
+        if (peakForceTenthsLb == null && peakPowerWatts == null && timeToPeakMillis == null) {
+            return null
+        }
+
+        return PowerWorkoutSummary(
+            peakForceLb = peakForceTenthsLb?.let { it / POWER_WORKOUT_FORCE_TENTHS_PER_LB },
+            peakPowerWatts = peakPowerWatts,
+            timeToPeakMillis = timeToPeakMillis,
+            allowWideLowerTimeToPeakCorrection = false,
+        )
+    }
+
+    private fun parsePowerWorkoutRepSummary(payload: ByteArray): PowerWorkoutSummary? {
+        if (payload.size < POWER_WORKOUT_REP_SUMMARY_MIN_BYTES) return null
+        if (payload[1].u8() != POWER_WORKOUT_REP_SUMMARY_LENGTH_MARKER) return null
+
+        val timeToPeakMillis = payload.u16le(POWER_WORKOUT_REP_SUMMARY_TIME_TO_PEAK_CENTISECONDS_OFFSET)
+            .takeIf { it in 1..MAX_REASONABLE_POWER_WORKOUT_TIME_TO_PEAK_CENTISECONDS }
+            ?.times(10L)
+            ?: return null
+
+        return PowerWorkoutSummary(
+            peakForceLb = null,
+            peakPowerWatts = null,
+            timeToPeakMillis = timeToPeakMillis,
+            allowWideLowerTimeToPeakCorrection = true,
+        )
+    }
+
+    private fun PowerWorkoutSummary.correctedTimeToPeakMillis(currentMillis: Long?): Long? {
+        val summaryMillis = timeToPeakMillis ?: return null
+        val liveMillis = currentMillis ?: return summaryMillis
+        return if (allowWideLowerTimeToPeakCorrection) {
+            summaryMillis.takeIf { it <= liveMillis + POWER_WORKOUT_SUMMARY_TIME_CORRECTION_MAX_DELTA_MILLIS }
+        } else {
+            summaryMillis.takeIf {
+                abs(it - liveMillis) <= POWER_WORKOUT_SUMMARY_TIME_CORRECTION_MAX_DELTA_MILLIS
+            }
+        }
+    }
+
+    private fun parsePowerWorkoutTelemetry(packet: ParsedVoltraPacket): PowerWorkoutTelemetry? {
+        if (packet.commandId != CMD_TELEMETRY) return null
+        val payload = packet.payload
+        if (payload.size < POWER_WORKOUT_LIVE_MIN_BYTES) return null
+        if (payload[0].u8() != POWER_WORKOUT_LIVE_TYPE) return null
+        if (payload[1].u8() != POWER_WORKOUT_LIVE_LENGTH_MARKER) return null
+
+        val forceTenthsLb = payload.u16le(POWER_WORKOUT_LIVE_FORCE_TENTHS_LB_OFFSET)
+            .takeIf { it in 0..MAX_REASONABLE_POWER_WORKOUT_FORCE_TENTHS_LB }
+            ?: return null
+        val tick = payload.u32le(POWER_WORKOUT_LIVE_TICK_OFFSET)
+            .takeIf { it >= 0 }
+            ?.toLong()
+            ?: return null
+
+        return PowerWorkoutTelemetry(
+            forceTenthsLb = forceTenthsLb,
+            forceLb = forceTenthsLb / POWER_WORKOUT_FORCE_TENTHS_PER_LB,
+            tick = tick,
+        )
+    }
+
+    private fun interpolatePowerWorkoutStartTick(
+        startForceTenthsLb: Int,
+        previousForceTenthsLb: Int?,
+        previousTick: Long?,
+        currentForceTenthsLb: Int,
+        currentTick: Long,
+    ): Long {
+        if (
+            previousForceTenthsLb == null ||
+            previousTick == null ||
+            previousTick >= currentTick ||
+            previousForceTenthsLb >= startForceTenthsLb ||
+            currentForceTenthsLb <= previousForceTenthsLb
+        ) {
+            return currentTick
+        }
+        val fraction =
+            (startForceTenthsLb - previousForceTenthsLb).toDouble() /
+                (currentForceTenthsLb - previousForceTenthsLb).toDouble()
+        return (previousTick + ((currentTick - previousTick) * fraction).roundToLong())
+            .coerceIn(previousTick, currentTick)
+    }
+
+    private fun powerWorkoutStartThresholdTenths(
+        previousForceTenthsLb: Int?,
+        currentForceTenthsLb: Int,
+        hasActivePull: Boolean,
+        phase: String?,
+    ): Int? {
+        if (hasActivePull || phase != "Pull") return null
+        if (
+            previousForceTenthsLb != null &&
+            previousForceTenthsLb < POWER_WORKOUT_PRIMARY_START_FORCE_TENTHS_LB &&
+            currentForceTenthsLb >= POWER_WORKOUT_PRIMARY_START_FORCE_TENTHS_LB
+        ) {
+            return POWER_WORKOUT_PRIMARY_START_FORCE_TENTHS_LB
+        }
+        if (
+            previousForceTenthsLb == null &&
+            currentForceTenthsLb >= POWER_WORKOUT_FALLBACK_START_FORCE_TENTHS_LB
+        ) {
+            return POWER_WORKOUT_FALLBACK_START_FORCE_TENTHS_LB
+        }
+        if (
+            previousForceTenthsLb != null &&
+            previousForceTenthsLb < POWER_WORKOUT_FALLBACK_START_FORCE_TENTHS_LB &&
+            currentForceTenthsLb >= POWER_WORKOUT_FALLBACK_START_FORCE_TENTHS_LB
+        ) {
+            return POWER_WORKOUT_FALLBACK_START_FORCE_TENTHS_LB
+        }
+        return null
+    }
+
+    private fun parseRowingSummaryTelemetry(
+        payload: ByteArray,
+        current: VoltraReading,
+        startMillis: Long,
+    ): RowingTelemetry? {
+        if (payload.size < ROWING_SUMMARY_MIN_BYTES) return null
+        if (payload[0].u8() != ROWING_SUMMARY_TYPE) return null
+        if (payload[1].u8() != ROWING_SUMMARY_LENGTH_MARKER) return null
+
+        val displayedDistanceMeters = payload.u32le(ROWING_SUMMARY_DISTANCE_METERS_OFFSET)
+            .takeIf { it in 0..100_000 }
+            ?.toDouble()
+        val currentPace500Millis = payload.u32le(ROWING_SUMMARY_CURRENT_PACE_TENTH_SECONDS_OFFSET)
+            .takeIf { it in 1..36_000 }
+            ?.times(100L)
+        val averagePace500Millis = payload.u32le(ROWING_SUMMARY_AVERAGE_PACE_TENTH_SECONDS_OFFSET)
+            .takeIf { it in 1..36_000 }
+            ?.times(100L)
+        val summaryStrokeRateSpm = payload[ROWING_SUMMARY_STROKE_RATE_SPM_OFFSET].u8()
+            .takeIf { it in 1..80 }
+        val legacyStrokeRateSpm = payload.u32le(ROWING_SUMMARY_LEGACY_STROKE_RATE_CENTI_SPM_OFFSET)
+            .div(100.0)
+            .roundToInt()
+            .takeIf { it in 1..80 }
+        val strokeRateSpm = summaryStrokeRateSpm ?: legacyStrokeRateSpm ?: current.rowingStrokeRateSpm
+        val strokeCount = payload.u32le(ROWING_SUMMARY_STROKE_COUNT_CENTI_OFFSET)
+            .div(100.0)
+            .roundToInt()
+            .takeIf { it in 0..MAX_REASONABLE_REP_COUNT }
+
+        val monotonicDistance = current.rowingDistanceMeters?.let { previous ->
+            if (displayedDistanceMeters != null && displayedDistanceMeters + 0.5 < previous) {
+                previous
+            } else {
+                displayedDistanceMeters
+            }
+        } ?: displayedDistanceMeters
+        val samples = monotonicDistance?.let { distance ->
+            (current.rowingDistanceSamplesMeters + distance).takeLast(MAX_ROWING_DISTANCE_SAMPLES)
+        } ?: current.rowingDistanceSamplesMeters
+        val elapsedMillis = monotonicDistance
+            ?.takeIf { it > 0.25 && averagePace500Millis != null }
+            ?.let { distance -> ((distance / 500.0) * averagePace500Millis!!).roundToLong() }
+            ?.takeIf { it in 0L..MAX_REASONABLE_ROWING_ELAPSED_MILLIS.toLong() }
+            ?: current.rowingElapsedMillis
+        val setCount = when {
+            strokeCount != null && strokeCount > 0 -> maxOf(current.setCount ?: 1, 1)
+            strokeCount != null -> current.setCount ?: 0
+            else -> current.setCount
+        }
+
+        return RowingTelemetry(
+            distanceMeters = monotonicDistance,
+            elapsedMillis = elapsedMillis,
+            pace500Millis = currentPace500Millis ?: current.rowingPace500Millis,
+            averagePace500Millis = averagePace500Millis ?: current.rowingAveragePace500Millis,
+            strokeRateSpm = strokeRateSpm,
+            forceLb = current.rowingDriveForceLb,
+            startMillis = startMillis,
+            strokeStartMillis = current.rowingLastStrokeStartMillis,
+            distanceSamplesMeters = samples,
+            forceSamplesLb = current.rowingForceSamplesLb,
+            lastChunkIndex = current.rowingForceLastChunkIndex,
+            setCount = setCount,
+            repCount = strokeCount ?: current.repCount,
+            phase = current.repPhase ?: if ((monotonicDistance ?: 0.0) > 0.0) "Rowing" else "Ready",
+        )
+    }
+
+    private fun parseRowingB4Telemetry(
+        payload: ByteArray,
+        current: VoltraReading,
+        startMillis: Long,
+        nowMillis: Long,
+    ): RowingTelemetry? {
+        if (payload.size != ROWING_B4_SHORT_BYTES) return null
+        val forceTenthsLb = payload.u16le(0)
+        if (forceTenthsLb !in 0..MAX_REASONABLE_ROWING_FORCE_TENTHS_LB) return null
+
+        val forceLb = forceTenthsLb / ROWING_FORCE_TENTHS_PER_LB
+        val previousForceLb = current.rowingDriveForceLb ?: current.forceLb
+        val previousPhase = current.repPhase
+        val phase = when {
+            forceLb < ROWING_RESET_FORCE_LB -> "Ready"
+            previousForceLb != null &&
+                forceLb < previousForceLb - ROWING_FORCE_DIRECTION_DEADBAND_LB -> "Recovery"
+            forceLb >= ROWING_ACTIVE_FORCE_LB -> "Drive"
+            else -> "Ready"
+        }
+        val samples = (current.rowingForceSamplesLb + forceLb).takeLast(MAX_ROWING_FORCE_SAMPLES)
+        return deriveRowingTelemetry(
+            current = current,
+            startMillis = startMillis,
+            nowMillis = nowMillis,
+            forceLb = forceLb,
+            distanceSamplesMeters = current.rowingDistanceSamplesMeters,
+            forceSamplesLb = samples,
+            lastChunkIndex = current.rowingForceLastChunkIndex,
+            setCount = current.setCount,
+            repCount = current.repCount,
+            phase = phase,
+            distanceMeters = current.rowingDistanceMeters,
+            strokeRateFallback = current.rowingStrokeRateSpm,
+            strokeStartMillis = current.rowingLastStrokeStartMillis,
+        )
+    }
+
+    private fun parseRowingStatusTelemetry(
+        payload: ByteArray,
+        current: VoltraReading,
+        startMillis: Long,
+        nowMillis: Long,
+    ): RowingTelemetry? {
+        if (payload.size < ROWING_AA92_DISTANCE_OFFSET + 4) return null
+        if (payload[0].u8() != ROWING_STATUS_TYPE) return null
+        val distanceCentimeters = payload.u32le(ROWING_AA92_DISTANCE_OFFSET)
+        val distanceMeters = (distanceCentimeters.takeIf {
+            it in 0..MAX_REASONABLE_ROWING_DISTANCE_CENTIMETERS
+        } ?: return null) / 100.0
+        val previousDistance = current.rowingDistanceMeters
+        val monotonicDistance = if (
+            previousDistance != null &&
+            distanceMeters + 0.5 < previousDistance
+        ) {
+            previousDistance
+        } else {
+            distanceMeters
+        }
+        val strokeRateFallback = payload.getOrNull(2)?.u8()?.takeIf { it in 1..80 }
+        return deriveRowingTelemetry(
+            current = current,
+            startMillis = startMillis,
+            nowMillis = nowMillis,
+            forceLb = current.rowingDriveForceLb,
+            distanceSamplesMeters = (current.rowingDistanceSamplesMeters + monotonicDistance)
+                .takeLast(MAX_ROWING_DISTANCE_SAMPLES),
+            forceSamplesLb = current.rowingForceSamplesLb,
+            lastChunkIndex = current.rowingForceLastChunkIndex,
+            setCount = current.setCount,
+            repCount = current.repCount,
+            phase = current.repPhase,
+            distanceMeters = monotonicDistance,
+            strokeRateFallback = strokeRateFallback,
+            strokeStartMillis = current.rowingLastStrokeStartMillis,
+        )
+    }
+
+    private fun parseRowingWaveformTelemetry(
+        payload: ByteArray,
+        current: VoltraReading,
+        startMillis: Long,
+        nowMillis: Long,
+    ): RowingTelemetry? {
+        if (payload.size < ROWING_WAVEFORM_HEADER_BYTES) return null
+        if (payload[0].u8() != ROWING_WAVEFORM_TYPE) return null
+        if (payload[1].u8() !in TELEMETRY_ISOMETRIC_WAVEFORM_MARKERS) return null
+
+        val chunkIndex = payload[2].u8()
+        val declaredSampleCount = payload.u16le(4)
+        val availableSampleCount = (payload.size - ROWING_WAVEFORM_HEADER_BYTES) / 2
+        val sampleCount = minOf(declaredSampleCount, availableSampleCount)
+        if (sampleCount <= 0) return null
+
+        val parsedSamples = buildList(sampleCount) {
+            repeat(sampleCount) { index ->
+                val offset = ROWING_WAVEFORM_HEADER_BYTES + (index * 2)
+                val sampleTenthsLb = payload.u16le(offset)
+                if (sampleTenthsLb !in 0..MAX_REASONABLE_ROWING_FORCE_TENTHS_LB) return null
+                add(sampleTenthsLb / ROWING_FORCE_TENTHS_PER_LB)
+            }
+        }
+        if (parsedSamples.isEmpty()) return null
+        val lastChunkIndex = current.rowingForceLastChunkIndex
+        val shouldReset = chunkIndex <= 1 ||
+            lastChunkIndex == null ||
+            chunkIndex <= lastChunkIndex
+        val samples = if (shouldReset) {
+            parsedSamples
+        } else {
+            (current.rowingForceSamplesLb + parsedSamples).takeLast(MAX_ROWING_FORCE_SAMPLES)
+        }
+        val forceLb = samples.lastOrNull() ?: current.rowingDriveForceLb
+        return deriveRowingTelemetry(
+            current = current,
+            startMillis = startMillis,
+            nowMillis = nowMillis,
+            forceLb = forceLb,
+            distanceSamplesMeters = current.rowingDistanceSamplesMeters,
+            forceSamplesLb = samples,
+            lastChunkIndex = chunkIndex,
+            setCount = current.setCount,
+            repCount = current.repCount,
+            phase = current.repPhase ?: "Drive",
+            distanceMeters = current.rowingDistanceMeters,
+            strokeRateFallback = null,
+            strokeStartMillis = current.rowingLastStrokeStartMillis,
+        )
+    }
+
+    private fun deriveRowingTelemetry(
+        current: VoltraReading,
+        startMillis: Long,
+        nowMillis: Long,
+        forceLb: Double?,
+        distanceSamplesMeters: List<Double>,
+        forceSamplesLb: List<Double>,
+        lastChunkIndex: Int?,
+        setCount: Int?,
+        repCount: Int?,
+        phase: String?,
+        distanceMeters: Double?,
+        strokeRateFallback: Int?,
+        strokeStartMillis: Long?,
+    ): RowingTelemetry {
+        val fallbackElapsedMillis = (nowMillis - startMillis).coerceAtLeast(0L)
+        val elapsedMillis = current.rowingElapsedMillis ?: fallbackElapsedMillis
+        val strokes = repCount ?: current.repCount
+        val strokeRate = strokeRateFallback ?: when {
+            fallbackElapsedMillis > 0L && strokes != null && strokes > 0 ->
+                ((strokes * 60_000.0) / fallbackElapsedMillis).roundToInt().coerceIn(1, 80)
+            else -> current.rowingStrokeRateSpm
+        }
+        val calculatedPaceMillis = distanceMeters
+            ?.takeIf { it > 0.25 && fallbackElapsedMillis > 0L }
+            ?.let { ((fallbackElapsedMillis / it) * 500.0).roundToInt().toLong() }
+            ?.takeIf { it in 1_000L..3_600_000L }
+        val paceMillis = current.rowingPace500Millis ?: calculatedPaceMillis
+        return RowingTelemetry(
+            distanceMeters = distanceMeters,
+            elapsedMillis = elapsedMillis,
+            pace500Millis = paceMillis,
+            averagePace500Millis = current.rowingAveragePace500Millis ?: paceMillis,
+            strokeRateSpm = strokeRate,
+            forceLb = forceLb,
+            startMillis = startMillis,
+            strokeStartMillis = strokeStartMillis,
+            distanceSamplesMeters = distanceSamplesMeters.takeLast(MAX_ROWING_DISTANCE_SAMPLES),
+            forceSamplesLb = forceSamplesLb.takeLast(MAX_ROWING_FORCE_SAMPLES),
+            lastChunkIndex = lastChunkIndex,
+            setCount = setCount,
+            repCount = repCount,
+            phase = phase,
+        )
     }
 
     private fun parseIsometricTelemetry(
@@ -1189,6 +1953,36 @@ object VoltraNotificationParser {
         val setCount: Int,
         val repCount: Int,
         val phase: String,
+    )
+
+    private data class RowingTelemetry(
+        val distanceMeters: Double?,
+        val elapsedMillis: Long?,
+        val pace500Millis: Long?,
+        val averagePace500Millis: Long?,
+        val strokeRateSpm: Int?,
+        val forceLb: Double?,
+        val startMillis: Long?,
+        val strokeStartMillis: Long?,
+        val distanceSamplesMeters: List<Double>?,
+        val forceSamplesLb: List<Double>?,
+        val lastChunkIndex: Int?,
+        val setCount: Int?,
+        val repCount: Int?,
+        val phase: String?,
+    )
+
+    private data class PowerWorkoutSummary(
+        val peakForceLb: Double?,
+        val peakPowerWatts: Int?,
+        val timeToPeakMillis: Long?,
+        val allowWideLowerTimeToPeakCorrection: Boolean,
+    )
+
+    private data class PowerWorkoutTelemetry(
+        val forceTenthsLb: Int,
+        val forceLb: Double,
+        val tick: Long,
     )
 
     private data class IsometricTelemetry(

@@ -75,10 +75,17 @@ object VoltraControlFrames {
     const val PARAM_ISOKINETIC_ECC_CONST_WEIGHT = 0x5412
     const val PARAM_ISOKINETIC_ECC_OVERLOAD_WEIGHT = 0x5413
     const val PARAM_ISOMETRIC_MAX_FORCE = 0x5431
+    const val PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX = 0x53A7
+    const val PARAM_EP_ROW_CHAIN_GEAR = 0x53AE
+    const val MIN_ROWING_SELECTOR_LEVEL = 1
+    const val MAX_ROWING_SELECTOR_LEVEL = 10
+    const val DEFAULT_ROWING_RESISTANCE_LEVEL = 4
+    const val DEFAULT_ROWING_SIMULATED_WEAR_LEVEL = 8
 
     const val FITNESS_MODE_ISOMETRIC_ARMED = 0x0001
     const val FITNESS_MODE_STRENGTH_READY = 0x0004
     const val FITNESS_MODE_STRENGTH_LOADED = 0x0005
+    const val FITNESS_MODE_ROWING_ACTIVE = 0x0015
     const val FITNESS_MODE_TEST_SCREEN = 0x0085
     const val ISOKINETIC_MENU_ISOKINETIC = 0x00
     const val ISOKINETIC_MENU_CONSTANT_RESISTANCE = 0x01
@@ -86,6 +93,7 @@ object VoltraControlFrames {
     const val WORKOUT_STATE_INACTIVE = 0x00
     const val WORKOUT_STATE_ACTIVE = 0x01
     const val WORKOUT_STATE_RESISTANCE_BAND = 0x02
+    const val WORKOUT_STATE_ROWING = 0x03
     const val WORKOUT_STATE_DAMPER = 0x04
     const val WORKOUT_STATE_CUSTOM_CURVE = 0x06
     const val WORKOUT_STATE_ISOKINETIC = 0x07
@@ -93,11 +101,14 @@ object VoltraControlFrames {
     const val STARTUP_IMAGE_SIZE_PX = 720
     const val STARTUP_IMAGE_HEADER_FIXED_FLAGS = 0x0001
     const val STARTUP_IMAGE_HEADER_UNKNOWN_MARKER = 0xFFFF
-    // The strongest official custom-photo path we have now includes a later
-    // cropped upload branch that uses trailer=0x0002 and 208-byte AD03 chunks.
-    // That branch lines up better with the explicit crop UX on iPad.
+    // Official captures show two startup-image header trailers: compact
+    // transfers around 54 KB use 0x0000, while larger cropped photos use 0x0002.
+    // AD03 media chunks carry 464 image bytes; chunks whose full frame length
+    // exceeds one byte are sent as frame type 0x05, while short control frames
+    // stay type 0x04.
+    const val STARTUP_IMAGE_HEADER_COMPACT_TRAILER = 0x0000
     const val STARTUP_IMAGE_HEADER_CUSTOM_PHOTO_TRAILER = 0x0002
-    const val STARTUP_IMAGE_CHUNK_DATA_BYTES = 208
+    const val STARTUP_IMAGE_CHUNK_DATA_BYTES = 464
     const val DEVICE_NAME_MAX_BYTES = 21
     const val CUSTOM_CURVE_POINT_COUNT = 4
     private const val CUSTOM_CURVE_WIRE_POINT_COUNT = 6
@@ -111,8 +122,11 @@ object VoltraControlFrames {
     const val DEFAULT_CUSTOM_CURVE_RANGE_OF_MOTION_IN = 117
     private const val MAX_CUSTOM_CURVE_WIRE_RANGE_OF_MOTION_TENTHS_IN = 1170
     private const val CUSTOM_CURVE_WIRE_FULL_SCALE_SPAN_LB = 120.0f
-    const val ROWING_SCREEN_ID = 0x39
-    const val ROWING_ONGOING_UI = 0x0108
+    const val ROWING_SCREEN_ID = 0x3E
+    const val ROWING_ONGOING_UI = 0x0303
+    private const val ROW_ACTION_START_JUST_ROW = 0x03
+    private const val ROW_ACTION_SELECT_JUST_ROW = 0x04
+    private const val ROW_ACTION_START_SELECTED_DISTANCE = 0x06
     private val CUSTOM_CURVE_WIRE_X_POINTS = listOf(
         0.16903418f,
         0.33806837f,
@@ -182,6 +196,43 @@ object VoltraControlFrames {
         return paramWritePayload(PARAM_FITNESS_WORKOUT_STATE, byteArrayOf(WORKOUT_STATE_ISOMETRIC.toByte()))
     }
 
+    fun enterRowPayload(): ByteArray {
+        return paramWritePayload(PARAM_FITNESS_WORKOUT_STATE, byteArrayOf(WORKOUT_STATE_ROWING.toByte()))
+    }
+
+    fun loadRowPayload(): ByteArray {
+        return paramWritePayload(PARAM_BP_SET_FITNESS_MODE, uint16Le(FITNESS_MODE_ROWING_ACTIVE))
+    }
+
+    fun startJustRowPayload(): ByteArray = loadRowPayload()
+
+    fun selectJustRowScreenPayload(): ByteArray {
+        return paramWritePayload(
+            PARAM_EP_SCR_SWITCH,
+            byteArrayOf(ROW_ACTION_SELECT_JUST_ROW.toByte(), ROWING_SCREEN_ID.toByte(), 0x00, 0x01),
+        )
+    }
+
+    fun triggerRowStartScreenPayload(targetMeters: Int? = null): ByteArray {
+        return paramWritePayload(
+            PARAM_EP_SCR_SWITCH,
+            byteArrayOf(rowStartActionCode(targetMeters).toByte(), ROWING_SCREEN_ID.toByte(), 0x00, 0x01),
+        )
+    }
+
+    fun rowStartActionCode(targetMeters: Int?): Int {
+        return when (targetMeters) {
+            null -> ROW_ACTION_START_JUST_ROW
+            50 -> ROW_ACTION_START_SELECTED_DISTANCE
+            100 -> 0x07
+            500 -> 0x08
+            1000 -> 0x09
+            2000 -> 0x0A
+            5000 -> 0x0B
+            else -> error("Unsupported Row target distance: $targetMeters")
+        }
+    }
+
     fun enterCustomCurvePayload(): ByteArray {
         return paramWritePayload(PARAM_FITNESS_WORKOUT_STATE, byteArrayOf(WORKOUT_STATE_CUSTOM_CURVE.toByte()))
     }
@@ -200,8 +251,19 @@ object VoltraControlFrames {
         )
     }
 
+    fun resetFitnessDataNotifySubscribePayload(): ByteArray {
+        return paramWritePayload(
+            PARAM_EP_FITNESS_DATA_NOTIFY_SUBSCRIBE,
+            byteArrayOf(0x00, 0x00, 0x00, 0x00),
+        )
+    }
+
     fun setFitnessDataNotifyHzPayload(): ByteArray {
         return paramWritePayload(PARAM_EP_FITNESS_DATA_NOTIFY_HZ, byteArrayOf(0x28))
+    }
+
+    fun resetFitnessDataNotifyHzPayload(): ByteArray {
+        return paramWritePayload(PARAM_EP_FITNESS_DATA_NOTIFY_HZ, byteArrayOf(0x00))
     }
 
     fun setDamperLevelPayload(level: Int): ByteArray {
@@ -209,6 +271,31 @@ object VoltraControlFrames {
             "Damper level index must be between 0 and 9, got $level."
         }
         return paramWritePayload(PARAM_FITNESS_DAMPER_RATIO_IDX, byteArrayOf(level.toByte()))
+    }
+
+    fun setRowingResistanceLevelPayload(level: Int): ByteArray {
+        return paramWritePayload(
+            PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX,
+            byteArrayOf(rowingSelectorWireIndex(level).toByte()),
+        )
+    }
+
+    fun setRowingSimulatedWearLevelPayload(level: Int): ByteArray {
+        return paramWritePayload(
+            PARAM_EP_ROW_CHAIN_GEAR,
+            byteArrayOf(rowingSelectorWireIndex(level).toByte()),
+        )
+    }
+
+    fun rowingSelectorWireIndex(level: Int): Int {
+        require(level in MIN_ROWING_SELECTOR_LEVEL..MAX_ROWING_SELECTOR_LEVEL) {
+            "Rowing selector level must be between $MIN_ROWING_SELECTOR_LEVEL and $MAX_ROWING_SELECTOR_LEVEL, got $level."
+        }
+        return level - 1
+    }
+
+    fun rowingSelectorDisplayLevel(wireIndex: Int?): Int? {
+        return wireIndex?.takeIf { it in 0..9 }?.plus(1)
     }
 
     fun setResistanceBandMaxForcePayload(weightLb: Int): ByteArray {
@@ -346,8 +433,10 @@ object VoltraControlFrames {
         chunkCount: Int,
         width: Int = STARTUP_IMAGE_SIZE_PX,
         height: Int = STARTUP_IMAGE_SIZE_PX,
+        trailer: Int = startupImageHeaderTrailer(imageBytes, chunkCount),
     ): ByteArray {
         require(chunkCount in 1..0xFFFF) { "Startup image chunk count must be between 1 and 65535." }
+        require(trailer in 0..0xFFFF) { "Startup image header trailer must fit uint16." }
         return byteArrayOf(0x02, STARTUP_IMAGE_HEADER_FIXED_FLAGS.toByte()) +
             uint16Le(STARTUP_IMAGE_HEADER_UNKNOWN_MARKER) +
             uint32Le(0) +
@@ -355,8 +444,20 @@ object VoltraControlFrames {
             uint16Le(height) +
             uint32Le(0) +
             uint32Le(startupImageFingerprint(imageBytes)) +
-            uint16Le(STARTUP_IMAGE_HEADER_CUSTOM_PHOTO_TRAILER) +
+            uint16Le(trailer) +
             uint16Le(chunkCount)
+    }
+
+    fun startupImageHeaderTrailer(imageBytes: ByteArray, chunkCount: Int): Int {
+        require(chunkCount in 1..0xFFFF) { "Startup image chunk count must be between 1 and 65535." }
+        return if (
+            imageBytes.size >= STARTUP_IMAGE_LARGE_CUSTOM_PHOTO_MIN_BYTES ||
+            chunkCount >= STARTUP_IMAGE_LARGE_CUSTOM_PHOTO_MIN_CHUNKS
+        ) {
+            STARTUP_IMAGE_HEADER_CUSTOM_PHOTO_TRAILER
+        } else {
+            STARTUP_IMAGE_HEADER_COMPACT_TRAILER
+        }
     }
 
     fun startupImageChunkPayload(
@@ -384,6 +485,15 @@ object VoltraControlFrames {
                 "53018c5401e552012d4e011150011853015b53011353010f5401d25301245101195301893e01035101b65301" +
                 "4154018b5401ae53016f5001625301b05301c95301c85301df54010f5201025101145301b75301c753011254" +
                 "01215401c65301d45401c553018d5301135401105401"
+            ).hexToByteArray()
+
+    fun rowBulkSubscribePayload(): ByteArray =
+        (
+            "0241007f5301505301515301a85101525301c75301145301835101245101105401ae5301145401675401df54" +
+                "01b04f010f5401065101c85301cf5301823e01645301e55201185301125401c45301315401155401a75301" +
+                "863e012d4e01135301893e018252015b5301135401195301815301b65301555301883e01625301215401b0" +
+                "5301c95301de5401873e01e14e010f52018b5401c553018d5301025101415401d454011154016a5001c653" +
+                "01035101853e016f5001115001d253018c54016e5001b75301"
             ).hexToByteArray()
 
     fun customCurveVendorPresetPayload(
@@ -488,6 +598,7 @@ object VoltraControlFrames {
                     normalizedMode == FITNESS_MODE_STRENGTH_LOADED ||
                     normalizedMode == FITNESS_MODE_TEST_SCREEN
             }
+            WORKOUT_STATE_ROWING -> normalizedFitnessMode(mode) == FITNESS_MODE_ROWING_ACTIVE
             else -> isLoadedFitnessMode(mode)
         }
     }
@@ -553,9 +664,46 @@ object VoltraControlFrames {
     }
 
     private fun startupImageFingerprint(imageBytes: ByteArray): Int {
-        val crc = java.util.zip.CRC32()
-        crc.update(imageBytes)
-        return crc.value.toInt()
+        val sizeLow16 = imageBytes.size and 0xFFFF
+        return (sizeLow16 shl 16) or startupImageCrc16(imageBytes)
     }
+
+    private fun startupImageCrc16(imageBytes: ByteArray): Int {
+        var crc = 0x496C
+        for (byte in imageBytes) {
+            crc = crc xor (reflect8(byte.toInt() and 0xFF) shl 8)
+            repeat(8) {
+                crc = if (crc and 0x8000 != 0) {
+                    ((crc shl 1) xor 0x1021) and 0xFFFF
+                } else {
+                    (crc shl 1) and 0xFFFF
+                }
+            }
+        }
+        return reflect16(crc)
+    }
+
+    private fun reflect8(value: Int): Int {
+        var v = value and 0xFF
+        var r = 0
+        repeat(8) {
+            r = (r shl 1) or (v and 1)
+            v = v shr 1
+        }
+        return r
+    }
+
+    private fun reflect16(value: Int): Int {
+        var v = value and 0xFFFF
+        var r = 0
+        repeat(16) {
+            r = (r shl 1) or (v and 1)
+            v = v shr 1
+        }
+        return r
+    }
+
+    private const val STARTUP_IMAGE_LARGE_CUSTOM_PHOTO_MIN_BYTES = 80_000
+    private const val STARTUP_IMAGE_LARGE_CUSTOM_PHOTO_MIN_CHUNKS = 200
 
 }

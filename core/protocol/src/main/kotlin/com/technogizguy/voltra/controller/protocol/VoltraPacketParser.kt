@@ -102,7 +102,7 @@ object VoltraPacketParser {
     }
 
     private fun expectedFrameLength(declaredLength: Int, packetType: Int): Int {
-        return if (packetType == EXTENDED_RESPONSE_PACKET_TYPE) {
+        return if (packetType == EXTENDED_RESPONSE_PACKET_TYPE || packetType == EXTENDED_APP_WRITE_PACKET_TYPE) {
             EXTENDED_RESPONSE_LENGTH_OFFSET + declaredLength
         } else {
             declaredLength
@@ -110,6 +110,7 @@ object VoltraPacketParser {
     }
 
     private const val HEADER_BYTES_NEEDED_FOR_LENGTH = 3
+    private const val EXTENDED_APP_WRITE_PACKET_TYPE = 0x05
     private const val EXTENDED_RESPONSE_PACKET_TYPE = 0x09
     private const val EXTENDED_RESPONSE_LENGTH_OFFSET = 0x100
 }

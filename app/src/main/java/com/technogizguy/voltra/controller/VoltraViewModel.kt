@@ -37,6 +37,7 @@ enum class ControlModeUi {
     ISOKINETIC,
     ISOMETRIC_TEST,
     CUSTOM_CURVE,
+    ROWING,
 }
 
 class VoltraViewModel(
@@ -235,6 +236,34 @@ class VoltraViewModel(
         beginWorkoutSessionFor(ControlModeUi.CUSTOM_CURVE)
         viewModelScope.launch {
             client.enterCustomCurveMode()
+        }
+    }
+
+    fun enterRowMode() {
+        beginWorkoutSessionFor(ControlModeUi.ROWING)
+        viewModelScope.launch {
+            client.enterRowMode()
+        }
+    }
+
+    fun startRow(targetMeters: Int? = null) {
+        beginWorkoutSessionFor(ControlModeUi.ROWING)
+        viewModelScope.launch {
+            client.startRow(targetMeters)
+        }
+    }
+
+    fun setRowingResistanceLevel(level: Int) {
+        beginWorkoutSessionFor(ControlModeUi.ROWING)
+        viewModelScope.launch {
+            client.setRowingResistanceLevel(level)
+        }
+    }
+
+    fun setRowingSimulatedWearLevel(level: Int) {
+        beginWorkoutSessionFor(ControlModeUi.ROWING)
+        viewModelScope.launch {
+            client.setRowingSimulatedWearLevel(level)
         }
     }
 
@@ -454,6 +483,7 @@ class VoltraViewModel(
 
     fun exitWorkout() {
         finalizeActiveWorkoutIfNeeded(state.value)
+        mutableSelectedControlMode.value = ControlModeUi.WEIGHT_TRAINING
         viewModelScope.launch {
             client.exitWorkout()
         }
@@ -652,6 +682,15 @@ class VoltraViewModel(
         appendLine("Isometric peak force: ${reading.isometricPeakForceN?.let { "$it N" } ?: "unknown"}")
         appendLine("Isometric peak relative force: ${reading.isometricPeakRelativeForcePercent?.let { "$it %" } ?: "unknown"}")
         appendLine("Isometric elapsed: ${reading.isometricElapsedMillis?.let { "$it ms" } ?: "unknown"}")
+        appendLine("Rowing distance: ${reading.rowingDistanceMeters?.let { "$it m" } ?: "unknown"}")
+        appendLine("Rowing elapsed: ${reading.rowingElapsedMillis?.let { "$it ms" } ?: "unknown"}")
+        appendLine("Rowing pace /500m: ${reading.rowingPace500Millis?.let { "$it ms" } ?: "unknown"}")
+        appendLine("Rowing average pace /500m: ${reading.rowingAveragePace500Millis?.let { "$it ms" } ?: "unknown"}")
+        appendLine("Rowing stroke rate: ${reading.rowingStrokeRateSpm?.let { "$it spm" } ?: "unknown"}")
+        appendLine("Rowing drive force: ${reading.rowingDriveForceLb?.let { "$it lb" } ?: "unknown"}")
+        appendLine("Rowing resistance level: ${reading.rowingResistanceLevel ?: "unknown"}")
+        appendLine("Rowing simulated wear: ${reading.rowingSimulatedWearLevel ?: "unknown"}")
+        appendLine("Rowing distance samples: ${reading.rowingDistanceSamplesMeters.size}")
         appendLine("Set count: ${reading.setCount ?: "unknown"}")
         appendLine("Rep count: ${reading.repCount ?: "unknown"}")
         appendLine("Rep phase: ${reading.repPhase ?: "unknown"}")
@@ -799,6 +838,10 @@ class VoltraViewModel(
                 reading.isometricMaxDurationSeconds?.let { add("Duration ${it}s") }
             }.joinToString(" | ").ifBlank { null }
             ControlModeUi.CUSTOM_CURVE -> "Custom Curve"
+            ControlModeUi.ROWING -> buildList {
+                reading.rowingDistanceMeters?.let { add("${trimToLabel(it)} m") }
+                reading.rowingPace500Millis?.let { add("${formatPaceForHistory(it)} /500m") }
+            }.joinToString(" | ").ifBlank { "Just Row" }
         }
     }
 
@@ -830,6 +873,11 @@ class VoltraViewModel(
         }
     }
 
+    private fun formatPaceForHistory(paceMillis: Long): String {
+        val totalSeconds = ((paceMillis + 500L) / 1000L).coerceAtLeast(0L)
+        return String.format(Locale.US, "%d:%02d", totalSeconds / 60L, totalSeconds % 60L)
+    }
+
     private fun ControlModeUi.displayLabel(): String = when (this) {
         ControlModeUi.WEIGHT_TRAINING -> "Weight Training"
         ControlModeUi.RESISTANCE_BAND -> "Resistance Band"
@@ -837,6 +885,7 @@ class VoltraViewModel(
         ControlModeUi.ISOKINETIC -> "Isokinetic"
         ControlModeUi.ISOMETRIC_TEST -> "Isometric Test"
         ControlModeUi.CUSTOM_CURVE -> "Custom Curve"
+        ControlModeUi.ROWING -> "Rowing"
     }
 
     private data class ActiveWorkoutDraft(

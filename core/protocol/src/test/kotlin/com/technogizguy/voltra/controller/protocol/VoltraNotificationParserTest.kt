@@ -209,6 +209,32 @@ class VoltraNotificationParserTest {
     }
 
     @Test
+    fun extractsRowingSelectorLevelsFromZeroBasedParamUpdates() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(),
+            value = VoltraFrameBuilder.build(
+                cmd = 0x10,
+                payload = byteArrayOf(
+                    0x02,
+                    0x00,
+                    0xA7.toByte(),
+                    0x53,
+                    0x03,
+                    0xAE.toByte(),
+                    0x53,
+                    0x07,
+                ),
+                seq = 9,
+            ),
+            nowMillis = 5700L,
+        )
+
+        assertEquals(4, reading.rowingResistanceLevel)
+        assertEquals(8, reading.rowingSimulatedWearLevel)
+        assertEquals(5700L, reading.lastUpdatedMillis)
+    }
+
+    @Test
     fun extractsExperimentalRepCountFromWeightTrainingTelemetry() {
         val reading = VoltraNotificationParser.mergeReading(
             current = VoltraReading(),
@@ -329,9 +355,318 @@ class VoltraNotificationParserTest {
         )
 
         assertEquals("Isometric Test, Loaded", reading.workoutMode)
+        assertEquals(0x39, reading.appCurrentScreenId)
+        assertEquals(0x0108, reading.fitnessOngoingUi)
+        assertEquals(6282L, reading.lastUpdatedMillis)
+    }
+
+    @Test
+    fun doesNotPreserveStaleRowContextForSharedWorkoutStateEight() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(workoutMode = "Rowing, Ready"),
+            value = "551D04DF10AA930B2000100400893E8500B04F081150396754080148CC"
+                .hexToByteArray(),
+            nowMillis = 6283L,
+        )
+
+        assertEquals("Isometric Test, Loaded", reading.workoutMode)
+        assertEquals(0x39, reading.appCurrentScreenId)
+        assertEquals(0x0108, reading.fitnessOngoingUi)
+        assertNull(reading.isometricCurrentForceN)
+        assertNull(reading.isometricPeakForceN)
+        assertEquals(6283L, reading.lastUpdatedMillis)
+    }
+
+    @Test
+    fun labelsNativeRowWorkoutStateFromAndroidCapture() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(workoutMode = "Rowing, Monitor"),
+            value = VoltraFrameBuilder.build(
+                cmd = 0x10,
+                payload = "0400893E1500B04F0311503E67540303".hexToByteArray(),
+                seq = 0x62,
+            ),
+            nowMillis = 6284L,
+        )
+
+        assertEquals("Rowing, Live", reading.workoutMode)
         assertEquals(VoltraControlFrames.ROWING_SCREEN_ID, reading.appCurrentScreenId)
         assertEquals(VoltraControlFrames.ROWING_ONGOING_UI, reading.fitnessOngoingUi)
-        assertEquals(6282L, reading.lastUpdatedMillis)
+        assertEquals(6284L, reading.lastUpdatedMillis)
+    }
+
+    @Test
+    fun extractsRowingMetricsFromAa95SummaryFrames() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Rowing, Live",
+                rowingTelemetryStartMillis = 10_000L,
+                appCurrentScreenId = VoltraControlFrames.ROWING_SCREEN_ID,
+                fitnessOngoingUi = VoltraControlFrames.ROWING_ONGOING_UI,
+            ),
+            value = VoltraFrameBuilder.build(
+                cmd = 0xAA,
+                payload = "95251A4B090000B00D00009B52000052210000E6020000B80B0000B9100000000000001E000000"
+                    .hexToByteArray(),
+                seq = 0x63,
+            ),
+            nowMillis = 20_000L,
+        )
+
+        assertEquals(30.0, reading.rowingDistanceMeters!!, 0.01)
+        assertEquals(21_024L, reading.rowingElapsedMillis)
+        assertEquals(237_900L, reading.rowingPace500Millis)
+        assertEquals(350_400L, reading.rowingAveragePace500Millis)
+        assertEquals(26, reading.rowingStrokeRateSpm)
+        assertEquals(7, reading.repCount)
+        assertEquals(listOf(30.0), reading.rowingDistanceSamplesMeters)
+        assertEquals("Rowing, Live", reading.workoutMode)
+        assertNull(reading.isometricCurrentForceN)
+    }
+
+    @Test
+    fun extractsRowingDistanceFromLiveAndroidAa95SummaryTailField() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Rowing, Live",
+                rowingTelemetryStartMillis = 10_000L,
+                appCurrentScreenId = VoltraControlFrames.ROWING_SCREEN_ID,
+                fitnessOngoingUi = VoltraControlFrames.ROWING_ONGOING_UI,
+            ),
+            value = VoltraFrameBuilder.build(
+                cmd = 0xAA,
+                payload = "95252CFA090000A30B0000C85100005959000059030000B80B0000AB1300000000000023000000"
+                    .hexToByteArray(),
+                seq = 0x64,
+            ),
+            nowMillis = 30_000L,
+        )
+
+        assertEquals(35.0, reading.rowingDistanceMeters!!, 0.01)
+        assertEquals(20_853L, reading.rowingElapsedMillis)
+        assertEquals(255_400L, reading.rowingPace500Millis)
+        assertEquals(297_900L, reading.rowingAveragePace500Millis)
+        assertEquals(44, reading.rowingStrokeRateSpm)
+        assertEquals(9, reading.repCount)
+        assertEquals(listOf(35.0), reading.rowingDistanceSamplesMeters)
+        assertEquals("Rowing, Live", reading.workoutMode)
+        assertNull(reading.isometricCurrentForceN)
+    }
+
+    @Test
+    fun extractsDisplayedRowingMetricsFromCapturedAa95Summary() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Rowing, Live",
+                rowingTelemetryStartMillis = 10_000L,
+                appCurrentScreenId = VoltraControlFrames.ROWING_SCREEN_ID,
+                fitnessOngoingUi = VoltraControlFrames.ROWING_ONGOING_UI,
+            ),
+            value = VoltraFrameBuilder.build(
+                cmd = 0xAA,
+                payload = "95251B430800001A0C00000032000082D9010035020000B80B0000EA1200000000000015000000"
+                    .hexToByteArray(),
+                seq = 0x65,
+            ),
+            nowMillis = 30_000L,
+        )
+
+        assertEquals(21.0, reading.rowingDistanceMeters!!, 0.01)
+        assertEquals(13_012L, reading.rowingElapsedMillis)
+        assertEquals(211_500L, reading.rowingPace500Millis)
+        assertEquals(309_800L, reading.rowingAveragePace500Millis)
+        assertEquals(27, reading.rowingStrokeRateSpm)
+        assertEquals(6, reading.repCount)
+        assertEquals(listOf(21.0), reading.rowingDistanceSamplesMeters)
+        assertNull(reading.isometricCurrentForceN)
+    }
+
+    @Test
+    fun preservesCompletedRowingMetricsThroughReadyReadback() {
+        val summary = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Rowing, Live",
+                rowingTelemetryStartMillis = 10_000L,
+                appCurrentScreenId = VoltraControlFrames.ROWING_SCREEN_ID,
+                fitnessOngoingUi = VoltraControlFrames.ROWING_ONGOING_UI,
+            ),
+            value = VoltraFrameBuilder.build(
+                cmd = 0xAA,
+                payload = "95251D8B090000930A0000250F000000000000B6000000B80B0000A51500000000000007000000"
+                    .hexToByteArray(),
+                seq = 0x84,
+            ),
+            nowMillis = 30_000L,
+        )
+        val ready = VoltraNotificationParser.mergeReading(
+            current = summary,
+            value = VoltraFrameBuilder.build(
+                cmd = 0x10,
+                payload = "0400893E0400B04F0311503D67540305".hexToByteArray(),
+                seq = 0xA1,
+            ),
+            nowMillis = 31_000L,
+        )
+
+        assertEquals("Rowing, Ready", ready.workoutMode)
+        assertEquals(7.0, ready.rowingDistanceMeters!!, 0.01)
+        assertEquals(3_790L, ready.rowingElapsedMillis)
+        assertEquals(244_300L, ready.rowingPace500Millis)
+        assertEquals(270_700L, ready.rowingAveragePace500Millis)
+        assertEquals(29, ready.rowingStrokeRateSpm)
+        assertEquals(2, ready.repCount)
+        assertEquals(listOf(7.0), ready.rowingDistanceSamplesMeters)
+    }
+
+    @Test
+    fun clearsRowContextWhenInactiveWorkoutStateArrives() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Rowing, Starting",
+                rowingTelemetryStartMillis = 10_000L,
+                rowingDistanceMeters = 12.0,
+                rowingElapsedMillis = 8_000L,
+                repCount = 3,
+                repPhase = "Rowing",
+            ),
+            value = VoltraFrameBuilder.build(
+                cmd = 0x10,
+                payload = "0100B04F00".hexToByteArray(),
+                seq = 0x50,
+            ),
+            nowMillis = 10_100L,
+        )
+
+        assertEquals("Unknown mode, session inactive", reading.workoutMode)
+        assertNull(reading.rowingDistanceMeters)
+        assertNull(reading.rowingElapsedMillis)
+        assertNull(reading.rowingTelemetryStartMillis)
+        assertEquals(0, reading.repCount)
+        assertEquals("Ready", reading.repPhase)
+        assertEquals(10_100L, reading.lastUpdatedMillis)
+    }
+
+    @Test
+    fun ignoresStaleNativeRowingSummaryOutsideRowContext() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Strength loaded, session active",
+                repCount = 2,
+                repPhase = "Pull",
+            ),
+            value = VoltraFrameBuilder.build(
+                cmd = 0xAA,
+                payload = "95251B430800001A0C00000032000082D9010035020000B80B0000EA1200000000000015000000"
+                    .hexToByteArray(),
+                seq = 0x65,
+            ),
+            nowMillis = 30_000L,
+        )
+
+        assertNull(reading.rowingDistanceMeters)
+        assertNull(reading.rowingElapsedMillis)
+        assertEquals(2, reading.repCount)
+        assertEquals("Pull", reading.repPhase)
+        assertEquals("Strength loaded, session active", reading.workoutMode)
+    }
+
+    @Test
+    fun extractsRowingDistanceFromAa92StatusFrames() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Rowing, Loaded",
+                rowingTelemetryStartMillis = 10_000L,
+                appCurrentScreenId = VoltraControlFrames.ROWING_SCREEN_ID,
+                fitnessOngoingUi = VoltraControlFrames.ROWING_ONGOING_UI,
+            ),
+            value = VoltraFrameBuilder.build(
+                cmd = 0xAA,
+                payload = "921D0AF401000000000000690000007D190100690000008A120400F7100000"
+                    .hexToByteArray(),
+                seq = 0x44,
+            ),
+            nowMillis = 12_000L,
+        )
+
+        assertEquals(1.05, reading.rowingDistanceMeters!!, 0.01)
+        assertEquals(2_000L, reading.rowingElapsedMillis)
+        assertEquals("Rowing, Loaded", reading.workoutMode)
+        assertNull(reading.isometricCurrentForceN)
+    }
+
+    @Test
+    fun extractsRowingDriveForceAndStrokeFromB4Frames() {
+        val drive = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Rowing, Loaded",
+                rowingTelemetryStartMillis = 20_000L,
+                appCurrentScreenId = VoltraControlFrames.ROWING_SCREEN_ID,
+                fitnessOngoingUi = VoltraControlFrames.ROWING_ONGOING_UI,
+                repCount = 0,
+                repPhase = "Ready",
+            ),
+            value = VoltraFrameBuilder.build(
+                cmd = 0xB4,
+                payload = "320000000000A00F".hexToByteArray(),
+                seq = 0x45,
+            ),
+            nowMillis = 20_100L,
+        )
+        val recovery = VoltraNotificationParser.mergeReading(
+            current = drive,
+            value = VoltraFrameBuilder.build(
+                cmd = 0xB4,
+                payload = "080000000000A00F".hexToByteArray(),
+                seq = 0x46,
+            ),
+            nowMillis = 20_700L,
+        )
+
+        assertEquals(5.0, drive.rowingDriveForceLb!!, 0.1)
+        assertEquals("Drive", drive.repPhase)
+        assertEquals(0, drive.repCount)
+        assertNull(drive.setCount)
+        assertEquals(0.8, recovery.rowingDriveForceLb!!, 0.1)
+        assertEquals("Ready", recovery.repPhase)
+        assertEquals(0, recovery.repCount)
+        assertNull(recovery.setCount)
+        assertNull(recovery.isometricCurrentForceN)
+    }
+
+    @Test
+    fun preservesOfficialRowingSummaryMetricsWhenForceSamplesArrive() {
+        val summary = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Rowing, Live",
+                rowingTelemetryStartMillis = 10_000L,
+                appCurrentScreenId = VoltraControlFrames.ROWING_SCREEN_ID,
+                fitnessOngoingUi = VoltraControlFrames.ROWING_ONGOING_UI,
+            ),
+            value = VoltraFrameBuilder.build(
+                cmd = 0xAA,
+                payload = "95251B430800001A0C00000032000082D9010035020000B80B0000EA1200000000000015000000"
+                    .hexToByteArray(),
+                seq = 0x65,
+            ),
+            nowMillis = 30_000L,
+        )
+        val force = VoltraNotificationParser.mergeReading(
+            current = summary,
+            value = VoltraFrameBuilder.build(
+                cmd = 0xB4,
+                payload = "320000000000A00F".hexToByteArray(),
+                seq = 0x66,
+            ),
+            nowMillis = 70_000L,
+        )
+
+        assertEquals(21.0, force.rowingDistanceMeters!!, 0.01)
+        assertEquals(13_012L, force.rowingElapsedMillis)
+        assertEquals(211_500L, force.rowingPace500Millis)
+        assertEquals(309_800L, force.rowingAveragePace500Millis)
+        assertEquals(27, force.rowingStrokeRateSpm)
+        assertEquals(6, force.repCount)
+        assertEquals(5.0, force.rowingDriveForceLb!!, 0.1)
     }
 
     @Test
@@ -1219,6 +1554,144 @@ class VoltraNotificationParserTest {
             listOf(26.4, 54.0, 77.3),
             summary.isometricWaveformSamplesN.map(::roundToTenth),
         )
+    }
+
+    @Test
+    fun extractsPowerWorkoutSummaryFromIsokineticReportAndKeepsLiveTimeToPeak() {
+        val summary = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Isokinetic, Loaded",
+                workoutTimeToPeakMillis = 670L,
+            ),
+            value = "556E043C10AAFE9A2000AA855F0400036400E8033200000002000200EC01F800210000004A015C000E0000003600A4010A00000032004501070000006C020000F702000093020000332C0000E18F0300580000000D0000002C00000007000000101800004E020000800700006223"
+                .hexToByteArray(),
+            nowMillis = 20_000L,
+        )
+
+        assertEquals(49.2, summary.workoutPeakForceLb!!, 0.01)
+        assertEquals(33, summary.workoutPeakPowerWatts)
+        assertEquals(670L, summary.workoutTimeToPeakMillis)
+    }
+
+    @Test
+    fun appliesClosePowerWorkoutSummaryTimeToPeakCorrection() {
+        val summary = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Isokinetic, Loaded",
+                workoutTimeToPeakMillis = 820L,
+            ),
+            value = "556E043C10AAFE9A2000AA855F0400036400E8033200000002000200EC01F800210000004A015C000E0000003600A4010A00000032004501070000006C020000F702000093020000332C0000E18F0300580000000D0000002C00000007000000101800004E020000800700006223"
+                .hexToByteArray(),
+            nowMillis = 20_000L,
+        )
+
+        assertEquals(49.2, summary.workoutPeakForceLb!!, 0.01)
+        assertEquals(33, summary.workoutPeakPowerWatts)
+        assertEquals(880L, summary.workoutTimeToPeakMillis)
+    }
+
+    @Test
+    fun rejectsStalePowerWorkoutSummaryTimeToPeakCorrection() {
+        val summary = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Isokinetic, Loaded",
+                workoutTimeToPeakMillis = 677L,
+            ),
+            value = "556E043C10AA689D2000AA855F0400036400E80332000000010001004E01A900120000001B0161000C0000003600E5010B0000003300BD0109000000D20000004C0100001A010000AC0D000000000000170000000400000018000000050000005D07000031010000C201000079F1"
+                .hexToByteArray(),
+            nowMillis = 20_000L,
+        )
+
+        assertEquals(33.4, summary.workoutPeakForceLb!!, 0.01)
+        assertEquals(18, summary.workoutPeakPowerWatts)
+        assertEquals(677L, summary.workoutTimeToPeakMillis)
+    }
+
+    @Test
+    fun correctsPowerWorkoutTimeToPeakFromRepSummaryFrames() {
+        val transition = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Isokinetic, Loaded",
+                workoutTimeToPeakMillis = 2_100L,
+            ),
+            value = "554A04C610AA9CA12000AA823B01AE01000000640000000000000004012000AB00D9000E00000008000000D0000000E10A000001000004010800000015000000B00900003101000044E3"
+                .hexToByteArray(),
+            nowMillis = 20_000L,
+        )
+        val returned = VoltraNotificationParser.mergeReading(
+            current = transition,
+            value = "554A04C610AAA6A12000AA823B02AF010001006400000000000000FA0084004202A0000D0000000A00000031000000E50100000104010A000A00000005000000E501000000000000F9F8"
+                .hexToByteArray(),
+            nowMillis = 20_500L,
+        )
+
+        assertEquals(2_170L, transition.workoutTimeToPeakMillis)
+        assertEquals(1_600L, returned.workoutTimeToPeakMillis)
+    }
+
+    @Test
+    fun ignoresLaterLongerPowerWorkoutRepSummaryTimeToPeak() {
+        val summary = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(
+                workoutMode = "Isokinetic, Loaded",
+                workoutTimeToPeakMillis = 690L,
+            ),
+            value = "554A04C610AA469D2000AA823B02A3010001006400000000000000C8008B00E50192000B0000000900000032000000C201000001D2000A000900000004000000C2010000000000003D64"
+                .hexToByteArray(),
+            nowMillis = 20_000L,
+        )
+
+        assertEquals(690L, summary.workoutTimeToPeakMillis)
+    }
+
+    @Test
+    fun derivesPowerWorkoutTimeToPeakFromLiveForceCrossing() {
+        val belowThreshold = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(workoutMode = "Isokinetic, Loaded"),
+            value = "553A047010AA2A9D2000AA812B01010000000000000058000E00800004000000000000000000D917A4012300000000000000000000005900B1C2"
+                .hexToByteArray(),
+            nowMillis = 20_000L,
+        )
+        val crossedThreshold = VoltraNotificationParser.mergeReading(
+            current = belowThreshold,
+            value = "553A047010AA2B9D2000AA812B0101000000000000008C001E009D00090000000000000000003D18A4018700000000000000000000008F00DF76"
+                .hexToByteArray(),
+            nowMillis = 20_100L,
+        )
+        val peak = VoltraNotificationParser.mergeReading(
+            current = crossedThreshold,
+            value = "553A047010AA319D2000AA812B0101000000000000004A0172006A000F000000000000000000951AA401DF02000000000000000000004801237E"
+                .hexToByteArray(),
+            nowMillis = 20_700L,
+        )
+
+        assertEquals(33.0, peak.workoutPeakForceLb!!, 0.01)
+        assertEquals(677L, peak.workoutTimeToPeakMillis)
+    }
+
+    @Test
+    fun usesCapturedIdleBaselineForPowerWorkoutStartTiming() {
+        val idle = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(workoutMode = "Isokinetic, Loaded"),
+            value = "553A047010AAF7A12000AA812B000100000000000000220006001200000000000000000000008442BC010000000000000000000000003200FA8F"
+                .hexToByteArray(),
+            nowMillis = 20_000L,
+        )
+        val started = VoltraNotificationParser.mergeReading(
+            current = idle,
+            value = "553A047010AAF8A12000AA812B0101000000000000004B000B00650002000000000000000000E842BC010F000000000000000000000049007967"
+                .hexToByteArray(),
+            nowMillis = 20_100L,
+        )
+        val peak = VoltraNotificationParser.mergeReading(
+            current = started,
+            value = "553A047010AA07A22000AA812B010100000000000000DE01D100710018000000000000000000C448BC01EB0500000000000000000000DE0129E0"
+                .hexToByteArray(),
+            nowMillis = 21_600L,
+        )
+
+        assertEquals(47.8, peak.workoutPeakForceLb!!, 0.01)
+        assertEquals(1_537L, peak.workoutTimeToPeakMillis)
     }
 
     @Test

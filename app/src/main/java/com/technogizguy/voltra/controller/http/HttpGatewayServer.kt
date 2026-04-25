@@ -283,6 +283,7 @@ class HttpGatewayServer(
             HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/damper", "Switch the Voltra into Damper."),
             HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/isokinetic", "Switch the Voltra into Isokinetic."),
             HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/isometric", "Switch the Voltra into Isometric Test."),
+            HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/rowing", "Switch the Voltra into Rowing."),
             HttpGatewayCommandDescriptor(
                 "POST",
                 "/v1/commands/target-load",
@@ -360,6 +361,18 @@ class HttpGatewayServer(
                 "/v1/commands/damper-level",
                 "Set the damper level from 1 to 10.",
                 buildJsonObject { put("level", 7) },
+            ),
+            HttpGatewayCommandDescriptor(
+                "POST",
+                "/v1/commands/rowing/resistance-level",
+                "Set Rowing resistance level from 1 to 10.",
+                buildJsonObject { put("level", 4) },
+            ),
+            HttpGatewayCommandDescriptor(
+                "POST",
+                "/v1/commands/rowing/simulated-wear",
+                "Set Rowing simulated wear from 1 to 10.",
+                buildJsonObject { put("level", 8) },
             ),
             HttpGatewayCommandDescriptor(
                 "POST",
@@ -462,6 +475,14 @@ class HttpGatewayServer(
                     putNullable("isometric_peak_force_n", reading.isometricPeakForceN)
                     putNullable("isometric_peak_relative_force_percent", reading.isometricPeakRelativeForcePercent)
                     putNullable("isometric_elapsed_ms", reading.isometricElapsedMillis)
+                    putNullable("rowing_distance_m", reading.rowingDistanceMeters)
+                    putNullable("rowing_elapsed_ms", reading.rowingElapsedMillis)
+                    putNullable("rowing_pace_500_ms", reading.rowingPace500Millis)
+                    putNullable("rowing_average_pace_500_ms", reading.rowingAveragePace500Millis)
+                    putNullable("rowing_stroke_rate_spm", reading.rowingStrokeRateSpm)
+                    putNullable("rowing_drive_force_lb", reading.rowingDriveForceLb)
+                    putNullable("rowing_resistance_level", reading.rowingResistanceLevel)
+                    putNullable("rowing_simulated_wear_level", reading.rowingSimulatedWearLevel)
                     putNullable("set_count", reading.setCount)
                     putNullable("rep_count", reading.repCount)
                     putNullable("rep_phase", reading.repPhase)
@@ -491,6 +512,8 @@ class HttpGatewayServer(
                 "/v1/commands/mode/damper" -> client.enterDamperMode()
                 "/v1/commands/mode/isokinetic" -> client.enterIsokineticMode()
                 "/v1/commands/mode/isometric" -> client.enterIsometricMode()
+                "/v1/commands/mode/rowing" -> client.enterRowMode()
+                "/v1/commands/rowing/start" -> client.startRow(optionalIntField(body, "target_meters"))
                 "/v1/commands/target-load" -> client.setTargetLoad(weightFromBody(body))
                 "/v1/commands/assist" -> client.setAssistMode(booleanField(body, "enabled"))
                 "/v1/commands/chains" -> client.setChainsWeight(weightFromBody(body))
@@ -502,6 +525,8 @@ class HttpGatewayServer(
                 "/v1/commands/resistance-band/progressive-length" -> client.setResistanceBandByRangeOfMotion(booleanField(body, "rom"))
                 "/v1/commands/resistance-band/length" -> client.setResistanceBandLengthCm((doubleField(body, "inches") * 2.54).toInt())
                 "/v1/commands/damper-level" -> client.setDamperLevel(intField(body, "level").coerceIn(1, 10))
+                "/v1/commands/rowing/resistance-level" -> client.setRowingResistanceLevel(intField(body, "level").coerceIn(1, 10))
+                "/v1/commands/rowing/simulated-wear" -> client.setRowingSimulatedWearLevel(intField(body, "level").coerceIn(1, 10))
                 "/v1/commands/isokinetic/menu" -> client.setIsokineticMenu(isokineticMenuValue(stringField(body, "mode")))
                 "/v1/commands/isokinetic/target-speed" -> client.setIsokineticTargetSpeedMmS(mpsToMmS(doubleField(body, "mps")))
                 "/v1/commands/isokinetic/speed-limit" -> client.setIsokineticSpeedLimitMmS(mpsToMmS(doubleField(body, "mps")))
@@ -559,6 +584,10 @@ class HttpGatewayServer(
     private fun intField(body: JsonObject, name: String): Int {
         return body[name]?.jsonPrimitive?.intOrNull
             ?: throw IllegalArgumentException("Expected integer field '$name'.")
+    }
+
+    private fun optionalIntField(body: JsonObject, name: String): Int? {
+        return body[name]?.jsonPrimitive?.intOrNull
     }
 
     private fun stringField(body: JsonObject, name: String): String {

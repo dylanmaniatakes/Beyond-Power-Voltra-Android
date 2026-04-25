@@ -5,8 +5,10 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.ImageDecoder
 import android.graphics.RectF
 import android.net.Uri
+import android.os.Build
 import java.io.ByteArrayOutputStream
 import kotlin.math.max
 
@@ -27,7 +29,7 @@ fun loadStartupImageBitmap(
     uri: Uri,
     targetLargestDimension: Int = 1440,
 ): Bitmap {
-    return decodeSampledBitmap(context.contentResolver, uri, targetLargestDimension)
+    return decodeStartupImageBitmap(context.contentResolver, uri, targetLargestDimension)
         ?: error("Could not decode the selected image.")
 }
 
@@ -87,10 +89,44 @@ private fun decodeSampledBitmap(
             height = bounds.outHeight,
             targetLargestDimension = targetLargestDimension,
         )
+        inPreferredConfig = Bitmap.Config.ARGB_8888
     }
     return contentResolver.openInputStream(uri)?.use { stream ->
         BitmapFactory.decodeStream(stream, null, options)
     }
+}
+
+private fun decodeStartupImageBitmap(
+    contentResolver: ContentResolver,
+    uri: Uri,
+    targetLargestDimension: Int,
+): Bitmap? {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        decodeWithImageDecoder(contentResolver, uri, targetLargestDimension)?.let { return it }
+    }
+    return decodeSampledBitmap(contentResolver, uri, targetLargestDimension)
+}
+
+private fun decodeWithImageDecoder(
+    contentResolver: ContentResolver,
+    uri: Uri,
+    targetLargestDimension: Int,
+): Bitmap? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
+    return runCatching {
+        val source = ImageDecoder.createSource(contentResolver, uri)
+        ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            decoder.setTargetSampleSize(
+                calculateInSampleSize(
+                    width = info.size.width,
+                    height = info.size.height,
+                    targetLargestDimension = targetLargestDimension,
+                ),
+            )
+            decoder.setOnPartialImageListener { true }
+        }
+    }.getOrNull()
 }
 
 private fun calculateInSampleSize(

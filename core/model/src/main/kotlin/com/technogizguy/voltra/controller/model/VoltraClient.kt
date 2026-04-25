@@ -38,6 +38,14 @@ interface VoltraClient {
 
     suspend fun enterCustomCurveMode(): VoltraCommandResult
 
+    suspend fun enterRowMode(): VoltraCommandResult
+
+    suspend fun startRow(targetMeters: Int? = null): VoltraCommandResult
+
+    suspend fun setRowingResistanceLevel(level: Int): VoltraCommandResult
+
+    suspend fun setRowingSimulatedWearLevel(level: Int): VoltraCommandResult
+
     suspend fun applyCustomCurve(
         points: List<Float>,
         resistanceMinLb: Int,
