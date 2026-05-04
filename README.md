@@ -253,3 +253,6 @@ Additional project docs live in this repository:
 - [Capture Checklist](./CAPTURE_CHECKLIST.md)
 - [Protocol Notes](./PROTOCOL_NOTES.md)
 - [SDK Research Notes](./SDK_RESEARCH_NOTES.md)
+
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/W7W41QWZNC)
