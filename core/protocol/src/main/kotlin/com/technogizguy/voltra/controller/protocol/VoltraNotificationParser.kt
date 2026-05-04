@@ -92,6 +92,10 @@ object VoltraNotificationParser {
             }
         }
         val weightTrainingExtraMode = params.uint8(PARAM_WEIGHT_TRAINING_EXTRA_MODE)
+        val directLoadEnabled = params.uint8(PARAM_DIRECT_LOAD_ENABLED)?.let { it == 1 }
+        val directLoadSafetyStatus = params.uint8(PARAM_DIRECT_LOAD_SAFETY_STATUS)
+        val directLoadSafetyCountdownMillis = params.uint16(PARAM_DIRECT_LOAD_SAFETY_COUNTDOWN_MILLIS)
+        val directLoadSafetyControl = params.uint8(PARAM_DIRECT_LOAD_SAFETY_CONTROL)
         val appCurrentScreenId = params.uint8(PARAM_APP_CUR_SCR_ID)
         val fitnessOngoingUi = params.uint16(PARAM_FITNESS_ONGOING_UI)
         val isokineticMode = params.uint8(PARAM_ISOKINETIC_ECC_MODE)
@@ -229,6 +233,10 @@ object VoltraNotificationParser {
             rowingSimulatedWearLevel == null &&
             assistModeEnabled == null &&
             weightTrainingExtraMode == null &&
+            directLoadEnabled == null &&
+            directLoadSafetyStatus == null &&
+            directLoadSafetyCountdownMillis == null &&
+            directLoadSafetyControl == null &&
             appCurrentScreenId == null &&
             fitnessOngoingUi == null &&
             isokineticMode == null &&
@@ -448,6 +456,10 @@ object VoltraNotificationParser {
             rowingSimulatedWearLevel = rowingSimulatedWearLevel ?: current.rowingSimulatedWearLevel,
             assistModeEnabled = assistModeEnabled ?: current.assistModeEnabled,
             weightTrainingExtraMode = weightTrainingExtraMode ?: current.weightTrainingExtraMode,
+            directLoadEnabled = directLoadEnabled ?: current.directLoadEnabled,
+            directLoadSafetyStatus = directLoadSafetyStatus ?: current.directLoadSafetyStatus,
+            directLoadSafetyCountdownMillis = directLoadSafetyCountdownMillis ?: current.directLoadSafetyCountdownMillis,
+            directLoadSafetyControl = directLoadSafetyControl ?: current.directLoadSafetyControl,
             appCurrentScreenId = when {
                 leavingRowing && appCurrentScreenId == null -> null
                 else -> appCurrentScreenId ?: current.appCurrentScreenId
@@ -781,6 +793,10 @@ object VoltraNotificationParser {
     private const val PARAM_EP_RESISTANCE_BAND_INVERSE = VoltraControlFrames.PARAM_EP_RESISTANCE_BAND_INVERSE
     private const val PARAM_QUICK_CABLE_ADJUSTMENT = VoltraControlFrames.PARAM_QUICK_CABLE_ADJUSTMENT
     private const val PARAM_WEIGHT_TRAINING_EXTRA_MODE = VoltraControlFrames.PARAM_WEIGHT_TRAINING_EXTRA_MODE
+    private const val PARAM_DIRECT_LOAD_ENABLED = VoltraControlFrames.PARAM_DIRECT_LOAD_PRIMARY_STATUS
+    private const val PARAM_DIRECT_LOAD_SAFETY_STATUS = VoltraControlFrames.PARAM_DIRECT_LOAD_FORCE_STATUS
+    private const val PARAM_DIRECT_LOAD_SAFETY_COUNTDOWN_MILLIS = VoltraControlFrames.PARAM_DIRECT_LOAD_RANGE_STATUS
+    private const val PARAM_DIRECT_LOAD_SAFETY_CONTROL = VoltraControlFrames.PARAM_DIRECT_LOAD_RUNTIME_STATUS
     private const val PARAM_ISOMETRIC_METRICS_TYPE = VoltraControlFrames.PARAM_ISOMETRIC_METRICS_TYPE
     private const val PARAM_ISOKINETIC_ECC_MODE = VoltraControlFrames.PARAM_ISOKINETIC_ECC_MODE
     private const val PARAM_EP_ISOKINETIC_TARGET_SPEED_MM_S = VoltraControlFrames.PARAM_EP_ISOKINETIC_TARGET_SPEED_MM_S

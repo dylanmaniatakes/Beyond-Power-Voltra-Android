@@ -81,6 +81,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -760,6 +761,7 @@ fun VoltraControllerApp(
                         onSaveCustomCurvePreset = viewModel::saveCustomCurvePreset,
                         onDeleteCustomCurvePreset = viewModel::deleteCustomCurvePreset,
                         onLoad = viewModel::load,
+                        onDirectLoad = viewModel::directLoad,
                         onUnload = viewModel::unload,
                         onReturnHome = {
                             navController.navigate(Route.HOME.path) {
@@ -1055,6 +1057,7 @@ private fun ControlScreen(
     onSaveCustomCurvePreset: (String, List<Float>, Int, Int, Int) -> Unit,
     onDeleteCustomCurvePreset: (String) -> Unit,
     onLoad: () -> Unit,
+    onDirectLoad: () -> Unit,
     onUnload: () -> Unit,
     onReturnHome: () -> Unit,
     onExitWorkout: () -> Unit,
@@ -1704,6 +1707,8 @@ private fun ControlScreen(
                     maxLoad = maxLoad,
                     weightStep = weightStep,
                     isLoaded = isLoaded,
+                    fitnessMode = state.safety.fitnessMode,
+                    directLoadSafetyCountdownMillis = state.reading.directLoadSafetyCountdownMillis,
                     controlReady = state.controlCommandsEnabled && modeSessionMatched,
                     canLoad = canLoadActiveProfile,
                     instantApply = instantApply,
@@ -1761,6 +1766,7 @@ private fun ControlScreen(
                     onSetUnit = onSetUnit,
                     unitSwitchEnabled = true,
                     onLoad = loadForMode,
+                    onDirectLoad = onDirectLoad,
                     onUnload = {
                         instantApply = false
                         lastInstantApplied = null
@@ -3603,6 +3609,8 @@ private fun WeightTrainingCard(
     maxLoad: Double,
     weightStep: Double,
     isLoaded: Boolean,
+    fitnessMode: Int?,
+    directLoadSafetyCountdownMillis: Int?,
     controlReady: Boolean,
     canLoad: Boolean,
     instantApply: Boolean,
@@ -3625,6 +3633,7 @@ private fun WeightTrainingCard(
     onSetUnit: (WeightUnit) -> Unit,
     unitSwitchEnabled: Boolean,
     onLoad: () -> Unit,
+    onDirectLoad: () -> Unit,
     onUnload: () -> Unit,
     cableLengthEnabled: Boolean,
     onTriggerCableLength: () -> Unit,
@@ -3635,9 +3644,67 @@ private fun WeightTrainingCard(
     var dialogInput by remember { mutableStateOf("") }
     var showSavePresetDialog by remember { mutableStateOf(false) }
     var presetNameInput by remember { mutableStateOf("") }
+    var showDirectLoadDialog by remember { mutableStateOf(false) }
+    var directLoadPhase by remember { mutableStateOf("Pull out cable and hold steady") }
+    var directLoadCountdownSeen by remember { mutableStateOf(false) }
+    val directLoadMode = VoltraControlFrames.normalizedFitnessMode(fitnessMode)
+    val directLoadWindowActive = VoltraControlFrames.isDirectLoadFitnessMode(fitnessMode)
+    val directLoadFullyLoaded =
+        isLoaded &&
+            VoltraControlFrames.isLoadedFitnessMode(fitnessMode) &&
+            !directLoadWindowActive
+    val latestDirectLoadMode by rememberUpdatedState(directLoadMode)
+    val latestDirectLoadFullyLoaded by rememberUpdatedState(directLoadFullyLoaded)
+    val latestDirectLoadCountdownSeen by rememberUpdatedState(directLoadCountdownSeen)
     val displayValueLabel = "${formatWeightValue(pendingTarget)} ${unit.label}"
     val cardPadding = if (wideLayout) 16.dp else 18.dp
     val sectionSpacing = if (wideLayout) 14.dp else 16.dp
+
+    fun startDirectLoad() {
+        if (!controlReady || !canLoad) return
+        directLoadCountdownSeen = false
+        directLoadPhase = "Pull out cable and hold steady"
+        showDirectLoadDialog = true
+        onDirectLoad()
+    }
+
+    LaunchedEffect(showDirectLoadDialog, directLoadSafetyCountdownMillis) {
+        if (!showDirectLoadDialog) return@LaunchedEffect
+        val countdownMillis = directLoadSafetyCountdownMillis
+        if (countdownMillis != null && countdownMillis in 1..3000) {
+            directLoadCountdownSeen = true
+            val seconds = ((countdownMillis + 999) / 1000).coerceIn(1, 3)
+            directLoadPhase = "Loading in $seconds"
+        } else if (directLoadCountdownSeen && countdownMillis == 0) {
+            directLoadPhase = "Loaded"
+            delay(1200)
+            showDirectLoadDialog = false
+        } else if (!directLoadCountdownSeen) {
+            directLoadPhase = "Pull out cable and hold steady"
+        }
+    }
+
+    LaunchedEffect(directLoadMode, directLoadFullyLoaded) {
+        if (!showDirectLoadDialog) return@LaunchedEffect
+        if (
+            latestDirectLoadFullyLoaded ||
+            latestDirectLoadMode == VoltraControlFrames.FITNESS_MODE_DIRECT_LOAD_READY
+        ) {
+            directLoadPhase = "Loaded"
+            delay(1200)
+            showDirectLoadDialog = false
+        }
+    }
+
+    LaunchedEffect(showDirectLoadDialog) {
+        if (!showDirectLoadDialog) return@LaunchedEffect
+        delay(45_000)
+        if (showDirectLoadDialog) {
+            directLoadPhase = if (latestDirectLoadCountdownSeen) "Loaded" else "Direct Load sent"
+            delay(1500)
+            showDirectLoadDialog = false
+        }
+    }
 
     if (showWeightDialog) {
         AlertDialog(
@@ -3697,6 +3764,34 @@ private fun WeightTrainingCard(
             dismissButton = {
                 TextButton(onClick = { showSavePresetDialog = false }) {
                     Text("Cancel")
+                }
+            },
+        )
+    }
+
+    if (showDirectLoadDialog) {
+        AlertDialog(
+            onDismissRequest = { showDirectLoadDialog = false },
+            title = { Text("Direct Load") },
+            text = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(28.dp),
+                        color = accent.accent,
+                    )
+                    Text(
+                        directLoadPhase,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDirectLoadDialog = false }) {
+                    Text("Close")
                 }
             },
         )
@@ -3909,11 +4004,12 @@ private fun WeightTrainingCard(
                                 dialogInput = formatWeightValue(pendingTarget)
                                 showWeightDialog = true
                             },
+                            onDirectLoad = ::startDirectLoad,
                             denseLayout = true,
                         )
                         HoldToLoadButton(
                             enabled = controlReady && canLoad,
-                            onLoad = onLoad,
+                            onLoad = ::startDirectLoad,
                         )
                     }
                     Column(
@@ -4002,6 +4098,7 @@ private fun WeightTrainingCard(
                         dialogInput = formatWeightValue(pendingTarget)
                         showWeightDialog = true
                     },
+                    onDirectLoad = ::startDirectLoad,
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -4069,7 +4166,7 @@ private fun WeightTrainingCard(
                 }
                 HoldToLoadButton(
                     enabled = controlReady && canLoad,
-                    onLoad = onLoad,
+                    onLoad = ::startDirectLoad,
                 )
             }
         }
@@ -7264,6 +7361,7 @@ private fun WorkoutCounterCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DigitalWeightDial(
     label: String,
@@ -7277,6 +7375,7 @@ private fun DigitalWeightDial(
     onTargetSettled: (Double) -> Unit,
     onCycleStep: () -> Unit,
     onOpenDial: () -> Unit,
+    onDirectLoad: (() -> Unit)? = null,
     denseLayout: Boolean = false,
 ) {
     val accent = LocalControlAccent.current
@@ -7339,7 +7438,10 @@ private fun DigitalWeightDial(
                         modifier = Modifier
                             .weight(if (compactLayout || reducedLayout) 1.1f else 1.4f)
                             .clip(MaterialTheme.shapes.small)
-                            .clickable(onClick = onOpenDial)
+                            .combinedClickable(
+                                onClick = onOpenDial,
+                                onLongClick = onDirectLoad,
+                            )
                             .padding(vertical = 6.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {

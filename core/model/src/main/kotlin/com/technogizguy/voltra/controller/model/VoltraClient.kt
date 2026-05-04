@@ -85,6 +85,8 @@ interface VoltraClient {
 
     suspend fun load(): VoltraCommandResult
 
+    suspend fun directLoad(): VoltraCommandResult
+
     suspend fun unload(): VoltraCommandResult
 
     suspend fun setStrengthMode(): VoltraCommandResult

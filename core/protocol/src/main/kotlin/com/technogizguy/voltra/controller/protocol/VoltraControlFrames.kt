@@ -60,6 +60,10 @@ object VoltraControlFrames {
     const val PARAM_RESISTANCE_BAND_ALGORITHM = 0x5361
     const val PARAM_RESISTANCE_BAND_MAX_FORCE = 0x5362
     const val PARAM_WEIGHT_TRAINING_EXTRA_MODE = 0x53C6
+    const val PARAM_DIRECT_LOAD_PRIMARY_STATUS = 0x538D
+    const val PARAM_DIRECT_LOAD_FORCE_STATUS = 0x53C7
+    const val PARAM_DIRECT_LOAD_RANGE_STATUS = 0x53C8
+    const val PARAM_DIRECT_LOAD_RUNTIME_STATUS = 0x53C9
     const val PARAM_ISOMETRIC_METRICS_TYPE = 0x53D1
     const val PARAM_ISOMETRIC_MAX_DURATION = 0x53D2
     const val PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_N = 0x535A
@@ -86,6 +90,8 @@ object VoltraControlFrames {
     const val FITNESS_MODE_STRENGTH_READY = 0x0004
     const val FITNESS_MODE_STRENGTH_LOADED = 0x0005
     const val FITNESS_MODE_ROWING_ACTIVE = 0x0015
+    const val FITNESS_MODE_DIRECT_LOAD_READY = 0x0026
+    const val FITNESS_MODE_DIRECT_LOAD_ACTIVE = 0x0027
     const val FITNESS_MODE_TEST_SCREEN = 0x0085
     const val ISOKINETIC_MENU_ISOKINETIC = 0x00
     const val ISOKINETIC_MENU_CONSTANT_RESISTANCE = 0x01
@@ -407,6 +413,17 @@ object VoltraControlFrames {
         return paramWritePayload(PARAM_BP_SET_FITNESS_MODE, uint16Le(FITNESS_MODE_STRENGTH_LOADED))
     }
 
+    fun directLoadTriggerPayload(): ByteArray = byteArrayOf(0x12)
+
+    fun readDirectLoadStatusPayload(): ByteArray {
+        return readParamsPayload(
+            PARAM_DIRECT_LOAD_PRIMARY_STATUS,
+            PARAM_DIRECT_LOAD_FORCE_STATUS,
+            PARAM_DIRECT_LOAD_RANGE_STATUS,
+            PARAM_DIRECT_LOAD_RUNTIME_STATUS,
+        )
+    }
+
     fun unloadPayload(): ByteArray {
         return setStrengthModePayload()
     }
@@ -586,6 +603,12 @@ object VoltraControlFrames {
         return normalizedFitnessMode(mode) == FITNESS_MODE_STRENGTH_LOADED
     }
 
+    fun isDirectLoadFitnessMode(mode: Int?): Boolean {
+        val normalizedMode = normalizedFitnessMode(mode)
+        return normalizedMode == FITNESS_MODE_DIRECT_LOAD_READY ||
+            normalizedMode == FITNESS_MODE_DIRECT_LOAD_ACTIVE
+    }
+
     fun isIsometricScreenMode(mode: Int?): Boolean {
         return normalizedFitnessMode(mode) == FITNESS_MODE_TEST_SCREEN
     }
@@ -599,7 +622,7 @@ object VoltraControlFrames {
                     normalizedMode == FITNESS_MODE_TEST_SCREEN
             }
             WORKOUT_STATE_ROWING -> normalizedFitnessMode(mode) == FITNESS_MODE_ROWING_ACTIVE
-            else -> isLoadedFitnessMode(mode)
+            else -> isLoadedFitnessMode(mode) || isDirectLoadFitnessMode(mode)
         }
     }
 

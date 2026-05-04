@@ -475,6 +475,13 @@ class VoltraViewModel(
         }
     }
 
+    fun directLoad() {
+        beginWorkoutSessionFor(mutableSelectedControlMode.value)
+        viewModelScope.launch {
+            client.directLoad()
+        }
+    }
+
     fun unload() {
         viewModelScope.launch {
             client.unload()

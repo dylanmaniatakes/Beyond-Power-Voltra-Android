@@ -1991,6 +1991,26 @@ class AndroidVoltraClient(
     private fun enqueueIsometricVendorRefresh(gatt: BluetoothGatt) {
         val transportCharacteristic = gatt.findVoltraCharacteristic(VoltraUuidRegistry.VOLTRA_TRANSPORT_CHARACTERISTIC_UUID)
             ?: return
+        val shouldPollDirectLoadStatus = VoltraControlFrames.isDirectLoadFitnessMode(
+            mutableState.value.safety.fitnessMode,
+        )
+        if (shouldPollDirectLoadStatus) {
+            val readFrameBytes = VoltraFrameBuilder.build(
+                cmd = VoltraControlFrames.CMD_PARAM_READ,
+                payload = VoltraControlFrames.readDirectLoadStatusPayload(),
+                seq = controlSeq++,
+            )
+            writeQueue += CharacteristicWrite(
+                gatt = gatt,
+                characteristic = transportCharacteristic,
+                packet = VoltraBootstrapPacket(
+                    label = "read Direct Load status params (538D/53C7/53C8/53C9)",
+                    hex = readFrameBytes.toHexString(),
+                ),
+                characteristicUuid = transportCharacteristic.uuid.toString().uppercase(),
+                command = VoltraControlCommand.REFRESH_MODE_FEATURE_STATUS,
+            )
+        }
         val frameBytes = VoltraFrameBuilder.build(
             cmd = VoltraControlFrames.CMD_VENDOR,
             payload = VoltraControlFrames.vendorStateRefreshPayload(),
@@ -2016,9 +2036,18 @@ class AndroidVoltraClient(
             current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING &&
                 current.reading.workoutMode?.startsWith("Rowing") == true &&
                 refreshWindowOpen
+        val directLoadMonitorActive =
+            current.safety.workoutState in setOf(
+                VoltraControlFrames.WORKOUT_STATE_ACTIVE,
+                VoltraControlFrames.WORKOUT_STATE_RESISTANCE_BAND,
+                VoltraControlFrames.WORKOUT_STATE_DAMPER,
+                VoltraControlFrames.WORKOUT_STATE_ISOKINETIC,
+                VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE,
+            ) && refreshWindowOpen
         return current.connectionState == VoltraConnectionState.CONNECTED &&
             (
                 rowMonitorActive ||
+                    directLoadMonitorActive ||
                     (
                         current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
                             (refreshWindowOpen || pendingIsometricLoadIssued || livePullInProgress)
@@ -2360,6 +2389,94 @@ class AndroidVoltraClient(
                 },
                 label = "load",
             )
+        }
+    }
+
+    override suspend fun directLoad(): VoltraCommandResult {
+        val current = mutableState.value
+        val currentGatt = gatt
+        val safetyReasons = current.safety.reasons.joinToString()
+        val command = VoltraControlCommand.DIRECT_LOAD
+        return when {
+            !current.controlCommandsEnabled ->
+                blocked(command, "Direct Load is locked: controlCommandsEnabled is false.")
+            current.connectionState != VoltraConnectionState.CONNECTED ->
+                blocked(command, "Cannot Direct Load while the VOLTRA is not connected.")
+            currentGatt == null ->
+                blocked(command, "No active GATT connection.")
+            current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING ||
+                current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ->
+                blocked(command, "Direct Load is available from Weight, Resistance, Damper, Isokinetic, and Custom Curve modes.")
+            !current.safety.canLoad ->
+                blocked(command, "Cannot Direct Load: $safetyReasons")
+            hasPendingCommand(command) ->
+                logCommand(
+                    VoltraCommandResult(
+                        command = command,
+                        status = VoltraCommandStatus.QUEUED,
+                        message = "Direct Load is already queued.",
+                        timestampMillis = System.currentTimeMillis(),
+                    ),
+                )
+            else -> {
+                val result = sendTransportFrames(
+                    gatt = currentGatt,
+                    command = command,
+                    frames = buildList {
+                        addStandardWorkoutTelemetryRestoreFrames()
+                        if (
+                            current.safety.workoutState == null ||
+                            current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_INACTIVE
+                        ) {
+                            add(
+                                QueuedFrameSpec(
+                                    label = "re-enter weight training (FITNESS_WORKOUT_STATE=1)",
+                                    bytes = VoltraFrameBuilder.build(
+                                        cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                                        payload = VoltraControlFrames.enterWeightTrainingPayload(),
+                                        seq = controlSeq++,
+                                    ),
+                                ),
+                            )
+                        }
+                        add(
+                            QueuedFrameSpec(
+                                label = "trigger Direct Load at distance (AA12)",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_VENDOR,
+                                    payload = VoltraControlFrames.directLoadTriggerPayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                        add(
+                            QueuedFrameSpec(
+                                label = "read Direct Load status params (538D/53C7/53C8/53C9)",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_PARAM_READ,
+                                    payload = VoltraControlFrames.readDirectLoadStatusPayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                        add(
+                            QueuedFrameSpec(
+                                label = "refresh Direct Load vendor state stream (AA13 01)",
+                                bytes = VoltraFrameBuilder.build(
+                                    cmd = VoltraControlFrames.CMD_VENDOR,
+                                    payload = VoltraControlFrames.vendorStateRefreshPayload(),
+                                    seq = controlSeq++,
+                                ),
+                            ),
+                        )
+                    },
+                    label = "Direct Load at distance",
+                )
+                if (result.status != VoltraCommandStatus.BLOCKED && result.status != VoltraCommandStatus.FAILED) {
+                    requestIsometricVendorRefreshBurst(DIRECT_LOAD_VENDOR_REFRESH_BURST_MILLIS)
+                }
+                result
+            }
         }
     }
 
@@ -3928,6 +4045,7 @@ class AndroidVoltraClient(
         private const val ISOMETRIC_VENDOR_REFRESH_INTERVAL_MILLIS = 500L
         private const val ISOMETRIC_VENDOR_REFRESH_BURST_MILLIS = 3_000L
         private const val ROW_VENDOR_REFRESH_BURST_MILLIS = 12_000L
+        private const val DIRECT_LOAD_VENDOR_REFRESH_BURST_MILLIS = 18_000L
         private const val ISOMETRIC_VENDOR_REFRESH_TAIL_MILLIS = 1_500L
         private const val ISOMETRIC_AUTO_LOAD_INITIAL_DELAY_MILLIS = 850L
         private const val ISOMETRIC_ENTER_SETTLE_MILLIS = 850L
