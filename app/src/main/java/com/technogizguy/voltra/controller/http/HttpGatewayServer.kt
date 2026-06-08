@@ -442,7 +442,7 @@ class HttpGatewayServer(
                 put("current_unit", currentUnit.name.lowercase(Locale.US))
                 put("device", buildJsonObject {
                     put("id", session.currentDevice?.id.orEmpty())
-                    put("name", session.currentDevice?.name.orEmpty())
+                    put("name", session.reading.deviceName ?: session.currentDevice?.name.orEmpty())
                     put("address", session.currentDevice?.address.orEmpty())
                 })
                 put("target_load", buildJsonObject {
@@ -452,6 +452,16 @@ class HttpGatewayServer(
                 put("reading", buildJsonObject {
                     putNullable("battery_percent", reading.batteryPercent)
                     putNullable("weight_lb", reading.weightLb)
+                    putNullable("max_target_load_lb", reading.maxTargetLoadLb)
+                    putNullable("supports_overdrive_250_lb", reading.supportsOverdrive250Lb)
+                    putNullable("feature_list_01", reading.featureList01Raw)
+                    putNullable("feature_list_02", reading.featureList02Raw)
+                    putNullable("overdrive_available", reading.overdriveAvailable)
+                    putNullable("overdrive_active_status", reading.overdriveActiveStatus)
+                    putNullable("overdrive_configured_max_force_lb", reading.overdriveUserConfiguredMaxForceLb)
+                    putNullable("max_allowed_force_lb", reading.maxAllowedForceLb)
+                    putNullable("max_chains_percent", reading.maxChainsPercent)
+                    putNullable("max_eccentric_percent", reading.maxEccentricPercent)
                     putNullable("force_lb", reading.forceLb)
                     putNullable("resistance_band_force_lb", reading.resistanceBandMaxForceLb)
                     putNullable("damper_level", reading.damperLevelIndex)
@@ -495,6 +505,12 @@ class HttpGatewayServer(
                     })
                     putNullable("workout_state", session.safety.workoutState)
                     putNullable("fitness_mode", session.safety.fitnessMode)
+                    putNullable("target_load_lb", session.safety.targetLoadLb)
+                    putNullable("max_target_load_lb", session.safety.maxTargetLoadLb)
+                    putNullable("supports_overdrive_250_lb", session.safety.supportsOverdrive250Lb)
+                    putNullable("overdrive_available", session.safety.overdriveAvailable)
+                    putNullable("overdrive_active_status", session.safety.overdriveActiveStatus)
+                    putNullable("overdrive_configured_max_force_lb", session.safety.overdriveUserConfiguredMaxForceLb)
                 })
             },
         )

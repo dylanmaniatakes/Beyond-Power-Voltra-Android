@@ -1108,6 +1108,10 @@ private fun ControlScreen(
         ControlModeUi.ROWING -> "Rowing"
     }
     val activeProfileStatus = when {
+        state.connectionState != VoltraConnectionState.CONNECTED ->
+            "Connect to a VOLTRA to use $modeTitle."
+        !state.controlCommandsEnabled ->
+            "Validating VOLTRA control link..."
         activeProfile == ControlModeUi.ROWING && state.reading.workoutMode?.startsWith("Rowing") == true ->
             state.reading.workoutMode ?: "Rowing is starting."
         activeProfile == ControlModeUi.ROWING && modeSessionMatched ->
@@ -1123,6 +1127,11 @@ private fun ControlScreen(
     }
     val controlAccent = controlAccentFor(activeProfile)
     val activeUnit = preferences.unit
+    val maxTargetLoadLb = state.safety.maxTargetLoadLb
+        .coerceIn(
+            VoltraControlFrames.MAX_TARGET_LB.toDouble(),
+            VoltraControlFrames.MAX_OVERDRIVE_TARGET_LB.toDouble(),
+        )
     val minLoad = when {
         inResistanceBand -> poundsToUnit(
             VoltraControlFrames.MIN_RESISTANCE_BAND_FORCE_LB.toDouble(),
@@ -1136,10 +1145,10 @@ private fun ControlScreen(
             VoltraControlFrames.MAX_RESISTANCE_BAND_FORCE_LB.toDouble(),
             activeUnit,
         )
-        activeUnit == WeightUnit.LB -> VoltraControlFrames.MAX_TARGET_LB.toDouble()
-        else -> 90.7
+        else -> poundsToUnit(maxTargetLoadLb, activeUnit)
     }
     val weightStep = if (inResistanceBand) 1.0 else preferences.weightIncrement.toDouble()
+    val deviceTargetLb = state.safety.targetLoadLb ?: state.reading.weightLb
     val displayedTarget = if (inResistanceBand) {
         state.reading.resistanceBandMaxForceLb?.let { poundsToUnit(it, activeUnit) }
             ?: convertWeightValue(
@@ -1148,11 +1157,12 @@ private fun ControlScreen(
                 to = activeUnit,
             )
     } else {
-        convertWeightValue(
-            value = state.targetLoad.value,
-            from = state.targetLoad.unit,
-            to = activeUnit,
-        )
+        deviceTargetLb?.let { poundsToUnit(it, activeUnit) }
+            ?: convertWeightValue(
+                value = state.targetLoad.value,
+                from = state.targetLoad.unit,
+                to = activeUnit,
+            )
     }
     var pendingTarget by remember(activeUnit, preferences.weightIncrement, displayedTarget, inResistanceBand) {
         mutableDoubleStateOf(snapWeight(displayedTarget, minLoad, maxLoad, weightStep))
@@ -1758,7 +1768,7 @@ private fun ControlScreen(
                     onApplyPreset = { preset ->
                         val converted = com.technogizguy.voltra.controller.model.Weight(preset.value, preset.unit)
                             .toUnit(activeUnit)
-                            .cappedForV1()
+                            .cappedForMax(if (inResistanceBand) VoltraControlFrames.MAX_RESISTANCE_BAND_FORCE_LB.toDouble() else maxTargetLoadLb)
                         pendingTarget = snapWeight(converted.value, minLoad, maxLoad, weightStep)
                         onApplyWeightPreset(preset)
                     },
@@ -1943,6 +1953,7 @@ private fun ControlScreen(
             baseWeightLb = state.safety.targetLoadLb
                 ?: state.reading.weightLb
                 ?: state.targetLoad.takeIf { it.unit == WeightUnit.LB }?.value,
+            maxTargetLoadLb = maxTargetLoadLb,
             controlReady = state.controlCommandsEnabled,
             developerModeEnabled = preferences.developerModeEnabled,
             experience = resistanceExperience,
@@ -2104,6 +2115,12 @@ private fun MoreFeaturesScreen(
             )
         }
         val rightColumn: @Composable ColumnScope.() -> Unit = {
+            PlatformStatusCard(
+                state = state,
+                historyCount = workoutHistory.size,
+                mqttState = mqttState,
+                httpGatewayState = httpGatewayState,
+            )
             MqttSensorCard(
                 preferences = preferences,
                 mqttState = mqttState,
@@ -2170,6 +2187,47 @@ private fun MoreFeaturesScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PlatformStatusCard(
+    state: VoltraSessionState,
+    historyCount: Int,
+    mqttState: MqttPublisherState,
+    httpGatewayState: HttpGatewayState,
+) {
+    val isConnected = state.connectionState == VoltraConnectionState.CONNECTED
+    val protocolReady = state.protocolStatus == VoltraProtocolStatus.COMMAND_PROTOCOL_VALIDATED
+    val streaming = state.reading.lastUpdatedMillis != null
+    val transferReady = isConnected && state.controlCommandsEnabled
+    val mqttLabel = when (mqttState.connectionState) {
+        MqttPublisherConnectionState.CONNECTED -> "Connected"
+        MqttPublisherConnectionState.CONNECTING -> "Connecting"
+        MqttPublisherConnectionState.ERROR -> "Needs attention"
+        MqttPublisherConnectionState.DISABLED -> "Off"
+    }
+    val httpLabel = when (httpGatewayState.connectionState) {
+        HttpGatewayConnectionState.RUNNING -> "Running"
+        HttpGatewayConnectionState.STARTING -> "Starting"
+        HttpGatewayConnectionState.ERROR -> "Needs attention"
+        HttpGatewayConnectionState.DISABLED -> "Off"
+    }
+
+    MetricCard {
+        Text("Platform Status", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(
+            "A quick read on the pieces that make this more than a remote: live control, measurement capture, transfer tools, history, and integrations.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        DetailRow("Control link", if (protocolReady) "Validated" else state.protocolStatus.displayText())
+        DetailRow("Live measurements", if (streaming) "Streaming" else if (isConnected) "Waiting" else "Connect first")
+        DetailRow("Data transfer", if (transferReady) "Name and startup image ready" else "Connect first")
+        DetailRow("History", "$historyCount saved sessions")
+        DetailRow("CSV export", if (historyCount > 0) "Ready" else "Ready after first workout")
+        DetailRow("MQTT", mqttLabel)
+        DetailRow("HTTP gateway", httpLabel)
     }
 }
 
@@ -3043,6 +3101,7 @@ private fun WorkoutHistoryCard(
             )
         } else {
             history.take(6).forEach { entry ->
+                val metricsSummary = workoutHistoryMetricsSummary(entry)
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -3059,9 +3118,9 @@ private fun WorkoutHistoryCard(
                                 append(" · ")
                                 append(it)
                             }
-                            entry.peakForceN?.let {
-                                append(" · Peak ")
-                                append("%.1f N".format(Locale.US, it))
+                            metricsSummary?.let {
+                                append(" · ")
+                                append(it)
                             }
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -3071,6 +3130,20 @@ private fun WorkoutHistoryCard(
             }
         }
     }
+}
+
+private fun workoutHistoryMetricsSummary(entry: WorkoutHistoryEntry): String? {
+    val parts = buildList {
+        entry.peakPowerWatts?.let { add("${it} W") }
+        entry.peakForceLb?.let { add("Peak ${formatWeightValue(it)} lb") }
+        entry.peakForceN?.let { add("Peak %.1f N".format(Locale.US, it)) }
+        entry.timeToPeakMillis?.let { add("TTP ${formatSecondsClock(it)}") }
+        entry.rowingDistanceMeters?.takeIf { it > 0.0 }?.let { add("${formatWeightValue(it)} m") }
+        entry.rowingElapsedMillis?.takeIf { it > 0L }?.let { add(formatElapsedClock(it)) }
+        entry.rowingPace500Millis?.let { add("${formatRowPace(it)} /500m") }
+        entry.rowingStrokeRateSpm?.let { add("${it} spm") }
+    }
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
 }
 
 @Composable
@@ -4070,7 +4143,7 @@ private fun WeightTrainingCard(
                                     contentColor = accent.onAccentContainer,
                                 ),
                             ) {
-                                Text("Unload")
+                                Text(if (isLoaded) "Unload" else "Load Weight")
                             }
                         }
                         OutlinedButton(
@@ -4154,7 +4227,7 @@ private fun WeightTrainingCard(
                             contentColor = accent.onAccentContainer,
                         ),
                     ) {
-                        Text("Unload")
+                        Text(if (isLoaded) "Unload" else "Load Weight")
                     }
                 }
                 OutlinedButton(
@@ -6271,6 +6344,7 @@ private fun WeightTrainingSettingsHost(
     reading: VoltraReading,
     unit: WeightUnit,
     baseWeightLb: Double?,
+    maxTargetLoadLb: Double,
     controlReady: Boolean,
     developerModeEnabled: Boolean,
     experience: ResistanceExperienceOption,
@@ -6292,9 +6366,9 @@ private fun WeightTrainingSettingsHost(
     var lastChainsAmount by remember { mutableDoubleStateOf(5.0) }
     var lastInverseChainsAmount by remember { mutableDoubleStateOf(5.0) }
     val base = baseWeightLb
-        ?.coerceIn(VoltraControlFrames.MIN_TARGET_LB.toDouble(), VoltraControlFrames.MAX_TARGET_LB.toDouble())
+        ?.coerceIn(VoltraControlFrames.MIN_TARGET_LB.toDouble(), maxTargetLoadLb)
     val chainsMax = base?.let {
-        minOf(it, VoltraControlFrames.MAX_TARGET_LB.toDouble() - it)
+        minOf(it, maxTargetLoadLb - it)
             .coerceIn(VoltraControlFrames.MIN_EXTRA_WEIGHT_LB.toDouble(), VoltraControlFrames.MAX_EXTRA_WEIGHT_LB.toDouble())
     } ?: 0.0
     val eccentricMin = -(base ?: 0.0)
@@ -7612,10 +7686,15 @@ private fun WeightTrainingFeaturesCard(
     var selectedStrengthSection by remember { mutableStateOf(StrengthSettingsSection.CHAINS) }
     var optimisticInverseChains by remember { mutableStateOf<Boolean?>(null) }
     var lastChainsAmount by remember { mutableDoubleStateOf(5.0) }
+    val maxTargetLoadLb = (reading.maxTargetLoadLb ?: VoltraControlFrames.MAX_TARGET_LB.toDouble())
+        .coerceIn(
+            VoltraControlFrames.MAX_TARGET_LB.toDouble(),
+            VoltraControlFrames.MAX_OVERDRIVE_TARGET_LB.toDouble(),
+        )
     val base = baseWeightLb
-        ?.coerceIn(VoltraControlFrames.MIN_TARGET_LB.toDouble(), VoltraControlFrames.MAX_TARGET_LB.toDouble())
+        ?.coerceIn(VoltraControlFrames.MIN_TARGET_LB.toDouble(), maxTargetLoadLb)
     val chainsMax = base?.let {
-        minOf(it, VoltraControlFrames.MAX_TARGET_LB.toDouble() - it)
+        minOf(it, maxTargetLoadLb - it)
             .coerceIn(VoltraControlFrames.MIN_EXTRA_WEIGHT_LB.toDouble(), VoltraControlFrames.MAX_EXTRA_WEIGHT_LB.toDouble())
     } ?: 0.0
     val eccentricMin = -(base ?: 0.0)
@@ -8227,6 +8306,7 @@ private fun ReadingCard(reading: VoltraReading) {
     MetricCard {
         Text("Readings", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         DetailRow("Battery", reading.batteryPercent?.let { "$it%" } ?: "Unknown")
+        DetailRow("Device name", reading.deviceName ?: "Unknown")
         DetailRow("Firmware", reading.firmwareVersion ?: "Unknown")
         DetailRow("Serial", reading.serialNumber ?: "Unknown")
         DetailRow("Activation", reading.activationState ?: "Unknown")
@@ -8234,6 +8314,11 @@ private fun ReadingCard(reading: VoltraReading) {
         DetailRow("Cable offset", reading.cableOffsetCm?.let { "$it cm" } ?: "Unknown")
         DetailRow("Force", reading.forceLb?.let { "$it lb" } ?: "Unknown")
         DetailRow("Target", reading.weightLb?.let { "$it lb" } ?: "Unknown")
+        DetailRow("Max target", reading.maxTargetLoadLb?.let { "${it.roundToInt()} lb" } ?: "Unknown")
+        DetailRow("Overdrive 250", reading.supportsOverdrive250Lb?.let { if (it) "Reported" else "Not reported" } ?: "Unknown")
+        DetailRow("Overdrive available", reading.overdriveAvailable?.let { if (it) "Yes" else "No" } ?: "Unknown")
+        DetailRow("Overdrive configured max", reading.overdriveUserConfiguredMaxForceLb?.let { "${it.roundToInt()} lb" } ?: "Unknown")
+        DetailRow("Feature list 02", reading.featureList02Raw?.let { "0x${it.toString(16).uppercase()}" } ?: "Unknown")
         DetailRow("Resistance Band", reading.resistanceBandMaxForceLb?.let { "$it lb max" } ?: "Unknown")
         DetailRow("Band length", reading.resistanceBandLengthCm?.let { "$it cm" } ?: "Unknown")
         DetailRow("Band ROM length", reading.resistanceBandByRangeOfMotion?.let { if (it) "On" else "Off" } ?: "Unknown")
@@ -8249,6 +8334,10 @@ private fun ReadingCard(reading: VoltraReading) {
         DetailRow("Reps", reading.repCount?.toString() ?: "Unknown")
         DetailRow("Rep phase", reading.repPhase ?: "Unknown")
         DetailRow("Mode", reading.workoutMode ?: "Unknown")
+        DetailRow(
+            "Screen state",
+            VoltraControlFrames.screenStateLabel(reading.appCurrentScreenId, reading.fitnessOngoingUi) ?: "Unknown",
+        )
     }
 }
 
@@ -8276,6 +8365,8 @@ private fun SafetyCard(state: VoltraSessionState) {
         DetailRow("Fitness mode", state.safety.fitnessMode?.toString() ?: "Unknown")
         DetailRow("Workout state", state.safety.workoutState?.toString() ?: "Unknown")
         DetailRow("Target load", state.safety.targetLoadLb?.let { "${it.roundToInt()} lb" } ?: "Unknown")
+        DetailRow("Max target", "${state.safety.maxTargetLoadLb.roundToInt()} lb")
+        DetailRow("Overdrive 250", if (state.safety.supportsOverdrive250Lb) "Reported" else "Not reported")
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
         state.safety.reasons.take(4).forEach { reason ->
             Text(reason, style = MaterialTheme.typography.bodySmall)

@@ -19,6 +19,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.technogizguy.voltra.controller.model.GattProperty
@@ -91,6 +92,7 @@ class AndroidVoltraClient(
     private var rowStartAttemptId = 0
     private var pendingStartupImageChunkCount = 0
     private var startupImageAckedChunkCount = 0
+    private var startupImageWakeLock: PowerManager.WakeLock? = null
     private val startupImageStatePollRunnables = mutableListOf<Runnable>()
 
     private val mutableState = MutableStateFlow(VoltraSessionState())
@@ -234,6 +236,7 @@ class AndroidVoltraClient(
         notificationAssemblers.clear()
         serviceDiscoveryStarted = false
         cancelIsometricVendorRefreshBurst()
+        releaseStartupImageWakeLock()
         mainHandler.removeCallbacksAndMessages(null)
         runReadOnlyBootstrapAfterSubscribe = false
         val disconnectedAt = System.currentTimeMillis()
@@ -252,13 +255,14 @@ class AndroidVoltraClient(
     }
 
     override suspend fun setTargetLoad(weight: Weight): VoltraCommandResult {
-        val capped = weight.cappedForV1()
-        mutableState.update { it.copy(targetLoad = capped) }
         val current = mutableState.value
+        val maxTargetLb = current.maxTargetLoadLbForCommands()
+        val capped = weight.cappedForMax(maxTargetLb.toDouble())
+        mutableState.update { it.copy(targetLoad = capped) }
         val currentGatt = gatt
         val targetLb = capped.toCommandPounds(
             min = VoltraControlFrames.MIN_TARGET_LB,
-            max = VoltraControlFrames.MAX_TARGET_LB,
+            max = maxTargetLb,
         )
         return when {
             !current.controlCommandsEnabled ->
@@ -1691,6 +1695,7 @@ class AndroidVoltraClient(
                         "chunkBytes=${VoltraControlFrames.STARTUP_IMAGE_CHUNK_DATA_BYTES} " +
                         "trailer=0x${headerTrailer.toString(16).uppercase().padStart(4, '0')}",
                 )
+                acquireStartupImageWakeLock()
                 val queuedFrames = buildList {
                     add(
                         QueuedFrameSpec(
@@ -1767,6 +1772,8 @@ class AndroidVoltraClient(
                     mutableState.update {
                         it.copy(statusMessage = "Queued startup image upload (${chunks.size} chunks).")
                     }
+                } else {
+                    releaseStartupImageWakeLock()
                 }
                 result
             }
@@ -1962,17 +1969,18 @@ class AndroidVoltraClient(
     }
 
     private fun VoltraSessionState.baseWeightLbForStrengthFeatures(): Int? {
+        val maxTargetLb = maxTargetLoadLbForCommands()
         return listOfNotNull(
             safety.targetLoadLb,
             reading.weightLb,
             targetLoad.takeIf { it.unit == WeightUnit.LB }?.value,
         )
-            .firstOrNull { it in VoltraControlFrames.MIN_TARGET_LB.toDouble()..VoltraControlFrames.MAX_TARGET_LB.toDouble() }
+            .firstOrNull { it in VoltraControlFrames.MIN_TARGET_LB.toDouble()..maxTargetLb.toDouble() }
             ?.roundToInt()
     }
 
     private fun VoltraSessionState.maxChainsWeightLb(baseWeightLb: Int): Int {
-        val headroomToDeviceMax = VoltraControlFrames.MAX_TARGET_LB - baseWeightLb
+        val headroomToDeviceMax = maxTargetLoadLbForCommands() - baseWeightLb
         return minOf(baseWeightLb, headroomToDeviceMax)
             .coerceIn(VoltraControlFrames.MIN_EXTRA_WEIGHT_LB, VoltraControlFrames.MAX_EXTRA_WEIGHT_LB)
     }
@@ -1985,6 +1993,15 @@ class AndroidVoltraClient(
     private fun VoltraSessionState.maxEccentricWeightLb(baseWeightLb: Int): Int {
         return baseWeightLb
             .coerceIn(VoltraControlFrames.MIN_ECCENTRIC_WEIGHT_LB, VoltraControlFrames.MAX_ECCENTRIC_WEIGHT_LB)
+    }
+
+    private fun VoltraSessionState.maxTargetLoadLbForCommands(): Int {
+        val reportedMax = when {
+            safety.supportsOverdrive250Lb -> safety.maxTargetLoadLb
+            reading.supportsOverdrive250Lb == true -> reading.maxTargetLoadLb
+            else -> null
+        } ?: VoltraControlFrames.MAX_TARGET_LB.toDouble()
+        return VoltraControlFrames.normalizedMaxTargetLoadLb(reportedMax.roundToInt())
     }
 
     @SuppressLint("MissingPermission")
@@ -3057,6 +3074,7 @@ class AndroidVoltraClient(
                     notificationAssemblers.clear()
                     serviceDiscoveryStarted = false
                     cancelIsometricVendorRefreshBurst()
+                    releaseStartupImageWakeLock()
                     pendingIsometricAutoLoad = false
                     stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
                     mainHandler.removeCallbacksAndMessages(null)
@@ -3355,6 +3373,9 @@ class AndroidVoltraClient(
                     timestampMillis = System.currentTimeMillis(),
                 ),
             )
+            if (finishedCommand == VoltraControlCommand.UPLOAD_STARTUP_IMAGE) {
+                releaseStartupImageWakeLock()
+            }
             return
         }
         inFlightWrite = item
@@ -3528,11 +3549,20 @@ class AndroidVoltraClient(
                     repPhase = "Ready",
                 )
             }
+            val currentTargetUnit = it.targetLoad.unit
+            val maxTargetLoadLb = nextSafety.maxTargetLoadLb
+            val syncedTargetLoad = nextSafety.targetLoadLb
+                ?.takeIf { pounds ->
+                    pounds in VoltraControlFrames.MIN_TARGET_LB.toDouble()..maxTargetLoadLb
+                }
+                ?.let { pounds -> Weight(pounds, WeightUnit.LB).toUnit(currentTargetUnit) }
+                ?: it.targetLoad
             nextReadingSnapshot = nextReading
             nextSafetySnapshot = nextSafety
             it.copy(
                 reading = nextReading,
                 safety = nextSafety,
+                targetLoad = syncedTargetLoad,
                 rawFrames = (it.rawFrames + frame).takeLast(MAX_CAPTURED_FRAMES),
                 protocolStatus = nextProtocolStatus(
                     current = it.protocolStatus,
@@ -3679,6 +3709,31 @@ class AndroidVoltraClient(
     private fun cancelStartupImageStatePolls() {
         startupImageStatePollRunnables.forEach { mainHandler.removeCallbacks(it) }
         startupImageStatePollRunnables.clear()
+    }
+
+    private fun acquireStartupImageWakeLock() {
+        releaseStartupImageWakeLock()
+        val wakeLock = appContext.getSystemService(PowerManager::class.java)
+            ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, STARTUP_IMAGE_WAKE_LOCK_TAG)
+            ?: return
+        wakeLock.setReferenceCounted(false)
+        runCatching {
+            wakeLock.acquire(STARTUP_IMAGE_WAKE_LOCK_TIMEOUT_MILLIS)
+        }.onSuccess {
+            startupImageWakeLock = wakeLock
+            Log.d(STARTUP_DEBUG_TAG, "acquired startup image wake lock")
+        }.onFailure { error ->
+            Log.w(STARTUP_DEBUG_TAG, "failed to acquire startup image wake lock", error)
+        }
+    }
+
+    private fun releaseStartupImageWakeLock() {
+        val wakeLock = startupImageWakeLock ?: return
+        if (wakeLock.isHeld) {
+            runCatching { wakeLock.release() }
+                .onFailure { error -> Log.w(STARTUP_DEBUG_TAG, "failed to release startup image wake lock", error) }
+        }
+        startupImageWakeLock = null
     }
 
     private fun maybeTraceStartupImageStatePacket(parsedPacket: Any?) {
@@ -4055,6 +4110,8 @@ class AndroidVoltraClient(
         private const val MAX_ISOMETRIC_REFRESH_BURST_SECONDS = 20
         private const val ISO_DEBUG_TAG = "VoltraIsoDebug"
         private const val STARTUP_DEBUG_TAG = "VoltraStartupDebug"
+        private const val STARTUP_IMAGE_WAKE_LOCK_TAG = "VoltraController:StartupImageUpload"
+        private const val STARTUP_IMAGE_WAKE_LOCK_TIMEOUT_MILLIS = 4 * 60 * 1000L
         private const val LEGACY_ISO_DEBUG_STATUS_PRIMARY_OFFSET = 11
         private const val LEGACY_ISO_DEBUG_STATUS_SECONDARY_OFFSET = 13
         private const val LEGACY_ISO_DEBUG_TICK_OFFSET = 27
@@ -4086,7 +4143,14 @@ class AndroidVoltraClient(
             VoltraControlFrames.PARAM_RESISTANCE_EXPERIENCE,
             VoltraControlFrames.PARAM_FITNESS_ASSIST_MODE,
             VoltraControlFrames.PARAM_EP_RESISTANCE_BAND_INVERSE,
+            VoltraControlFrames.PARAM_FEATURE_LIST_01,
+            VoltraControlFrames.PARAM_FEATURE_LIST_02,
+            VoltraControlFrames.PARAM_OVERDRIVE_AVAILABLE,
+            VoltraControlFrames.PARAM_OVERDRIVE_USER_CFG_FORCE_MAX,
+            VoltraControlFrames.PARAM_OVERDRIVE_ACTIVE_STATUS,
             VoltraControlFrames.PARAM_EP_MAX_ALLOWED_FORCE,
+            VoltraControlFrames.PARAM_EP_MAX_ECCENTRIC_PCT,
+            VoltraControlFrames.PARAM_EP_MAX_CHAINS_PCT,
             VoltraControlFrames.PARAM_FITNESS_DAMPER_RATIO_IDX,
             VoltraControlFrames.PARAM_ISOKINETIC_ECC_MODE,
             VoltraControlFrames.PARAM_EP_ISOKINETIC_TARGET_SPEED_MM_S,
@@ -4101,6 +4165,8 @@ class AndroidVoltraClient(
             VoltraControlFrames.PARAM_WEIGHT_TRAINING_EXTRA_MODE,
             VoltraControlFrames.PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX,
             VoltraControlFrames.PARAM_EP_ROW_CHAIN_GEAR,
+            VoltraControlFrames.PARAM_APP_CUR_SCR_ID,
+            VoltraControlFrames.PARAM_FITNESS_ONGOING_UI,
             VoltraControlFrames.PARAM_BP_SET_FITNESS_MODE,
             VoltraControlFrames.PARAM_FITNESS_WORKOUT_STATE,
             VoltraControlFrames.PARAM_BP_RUNTIME_POSITION_CM,

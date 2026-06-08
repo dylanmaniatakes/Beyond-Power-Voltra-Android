@@ -5,6 +5,7 @@ import java.nio.ByteOrder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -49,6 +50,25 @@ class VoltraFrameBuilderTest {
             "55130403AA1024002000110100893E05006C4B",
             frame.toHexString(),
         )
+    }
+
+    @Test
+    fun keepsDefaultTargetCapAt200UnlessDynamicMaxIsSupplied() {
+        assertFailsWith<IllegalArgumentException> {
+            VoltraControlFrames.setBaseWeightPayload(225)
+        }
+
+        val frame = VoltraFrameBuilder.build(
+            cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+            payload = VoltraControlFrames.setBaseWeightPayload(
+                weightLb = 225,
+                maxTargetLb = VoltraControlFrames.MAX_OVERDRIVE_TARGET_LB,
+            ),
+            seq = 0x33,
+        )
+
+        val packet = assertNotNull(VoltraPacketParser.parse(frame))
+        assertEquals("0100863EE100", packet.payload.toHexString())
     }
 
     @Test

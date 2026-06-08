@@ -17,6 +17,7 @@ import com.technogizguy.voltra.controller.model.VoltraScanResult
 import com.technogizguy.voltra.controller.model.VoltraSessionState
 import com.technogizguy.voltra.controller.model.Weight
 import com.technogizguy.voltra.controller.model.WeightUnit
+import com.technogizguy.voltra.controller.protocol.VoltraControlFrames
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -399,7 +400,7 @@ class VoltraViewModel(
     fun setUnit(unit: WeightUnit) {
         viewModelScope.launch {
             preferencesRepository.setUnit(unit)
-            client.setTargetLoad(state.value.targetLoad.copy(unit = unit).cappedForV1())
+            client.setTargetLoad(state.value.targetLoad.copy(unit = unit).cappedForMax(state.value.maxTargetLoadLbForUi()))
         }
     }
 
@@ -540,7 +541,11 @@ class VoltraViewModel(
 
     fun applyWeightPreset(preset: WeightPreset) {
         val targetUnit = preferences.value.unit
-        val converted = Weight(preset.value, preset.unit).toUnit(targetUnit).cappedForV1()
+        val maxTargetLoadLb = when (preset.scope) {
+            WeightPresetScope.WEIGHT_TRAINING -> state.value.maxTargetLoadLbForUi()
+            WeightPresetScope.RESISTANCE_BAND -> VoltraControlFrames.MAX_RESISTANCE_BAND_FORCE_LB.toDouble()
+        }
+        val converted = Weight(preset.value, preset.unit).toUnit(targetUnit).cappedForMax(maxTargetLoadLb)
         when (preset.scope) {
             WeightPresetScope.WEIGHT_TRAINING -> {
                 beginWorkoutSessionFor(ControlModeUi.WEIGHT_TRAINING)
@@ -654,6 +659,7 @@ class VoltraViewModel(
 
     private fun StringBuilder.appendReadingLines(reading: VoltraReading) {
         appendLine("Battery: ${reading.batteryPercent?.let { "$it%" } ?: "unknown"}")
+        appendLine("Device name: ${reading.deviceName ?: "unknown"}")
         appendLine("Firmware: ${reading.firmwareVersion ?: "unknown"}")
         appendLine("Serial: ${reading.serialNumber ?: "unknown"}")
         appendLine("Activation: ${reading.activationState ?: "unknown"}")
@@ -663,6 +669,16 @@ class VoltraViewModel(
         appendLine("Cable offset: ${reading.cableOffsetCm?.let { "$it cm" } ?: "unknown"}")
         appendLine("Force: ${reading.forceLb?.let { "$it lb" } ?: "unknown"}")
         appendLine("Weight: ${reading.weightLb?.let { "$it lb" } ?: "unknown"}")
+        appendLine("Max target load: ${reading.maxTargetLoadLb?.let { "$it lb" } ?: "unknown"}")
+        appendLine("Supports Overdrive 250 lb: ${reading.supportsOverdrive250Lb?.toString() ?: "unknown"}")
+        appendLine("Feature list 01: ${reading.featureList01Raw?.let { "0x${it.toString(16).uppercase(Locale.US)}" } ?: "unknown"}")
+        appendLine("Feature list 02: ${reading.featureList02Raw?.let { "0x${it.toString(16).uppercase(Locale.US)}" } ?: "unknown"}")
+        appendLine("Overdrive available: ${reading.overdriveAvailable?.toString() ?: "unknown"}")
+        appendLine("Overdrive active status: ${reading.overdriveActiveStatus ?: "unknown"}")
+        appendLine("Overdrive configured max force: ${reading.overdriveUserConfiguredMaxForceLb?.let { "$it lb" } ?: "unknown"}")
+        appendLine("Max allowed force: ${reading.maxAllowedForceLb?.let { "$it lb" } ?: "unknown"}")
+        appendLine("Max chains percent: ${reading.maxChainsPercent ?: "unknown"}")
+        appendLine("Max eccentric percent: ${reading.maxEccentricPercent ?: "unknown"}")
         appendLine("Resistance Band max force: ${reading.resistanceBandMaxForceLb?.let { "$it lb" } ?: "unknown"}")
         appendLine("Resistance Band length: ${reading.resistanceBandLengthCm?.let { "$it cm" } ?: "unknown"}")
         appendLine("Resistance Band ROM length: ${reading.resistanceBandByRangeOfMotion?.toString() ?: "unknown"}")
@@ -675,6 +691,7 @@ class VoltraViewModel(
         appendLine("Weight training extra mode: ${reading.weightTrainingExtraMode ?: "unknown"}")
         appendLine("App current screen id: ${reading.appCurrentScreenId ?: "unknown"}")
         appendLine("Fitness ongoing UI: ${reading.fitnessOngoingUi ?: "unknown"}")
+        appendLine("Screen state: ${VoltraControlFrames.screenStateLabel(reading.appCurrentScreenId, reading.fitnessOngoingUi) ?: "unknown"}")
         appendLine("Isokinetic target speed: ${reading.isokineticTargetSpeedMmS?.let { "${it / 1000.0} m/s" } ?: "unknown"}")
         appendLine("Isokinetic eccentric speed limit: ${reading.isokineticSpeedLimitMmS?.let { if (it == 0) "Auto" else "${it / 1000.0} m/s" } ?: "unknown"}")
         appendLine("Isokinetic constant resistance: ${reading.isokineticConstantResistanceLb?.let { "$it lb" } ?: "unknown"}")
@@ -715,7 +732,19 @@ class VoltraViewModel(
         appendLine("Workout state: ${safety.workoutState ?: "unknown"}")
         appendLine("Fitness mode: ${safety.fitnessMode ?: "unknown"}")
         appendLine("Target load lb: ${safety.targetLoadLb ?: "unknown"}")
+        appendLine("Max target load lb: ${safety.maxTargetLoadLb}")
+        appendLine("Supports Overdrive 250 lb: ${safety.supportsOverdrive250Lb}")
+        appendLine("Overdrive available: ${safety.overdriveAvailable ?: "unknown"}")
+        appendLine("Overdrive active status: ${safety.overdriveActiveStatus ?: "unknown"}")
+        appendLine("Overdrive configured max force: ${safety.overdriveUserConfiguredMaxForceLb?.let { "$it lb" } ?: "unknown"}")
         appendLine("Reasons: ${safety.reasons.joinToString().ifBlank { "none" }}")
+    }
+
+    private fun VoltraSessionState.maxTargetLoadLbForUi(): Double {
+        return safety.maxTargetLoadLb.coerceIn(
+            VoltraControlFrames.MAX_TARGET_LB.toDouble(),
+            VoltraControlFrames.MAX_OVERDRIVE_TARGET_LB.toDouble(),
+        )
     }
 
     private fun StringBuilder.appendFrameLines(frames: List<RawVoltraFrame>) {
@@ -782,6 +811,14 @@ class VoltraViewModel(
             reps = draft.reps,
             sets = draft.sets,
             peakForceN = draft.peakForceN,
+            peakForceLb = draft.peakForceLb,
+            peakPowerWatts = draft.peakPowerWatts,
+            timeToPeakMillis = draft.timeToPeakMillis,
+            rowingDistanceMeters = draft.rowingDistanceMeters,
+            rowingElapsedMillis = draft.rowingElapsedMillis,
+            rowingPace500Millis = draft.rowingPace500Millis,
+            rowingAveragePace500Millis = draft.rowingAveragePace500Millis,
+            rowingStrokeRateSpm = draft.rowingStrokeRateSpm,
             batteryStartPercent = draft.batteryStartPercent,
             batteryEndPercent = current.reading.batteryPercent ?: draft.batteryEndPercent,
         )
@@ -794,7 +831,12 @@ class VoltraViewModel(
         val history = workoutHistory.value
         val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
         return buildString {
-            appendLine("started_at,ended_at,duration_seconds,device,mode,primary_setting,sets,reps,peak_force_n,battery_start_percent,battery_end_percent")
+            appendLine(
+                "started_at,ended_at,duration_seconds,device,mode,primary_setting,sets,reps," +
+                    "peak_force_n,peak_force_lb,peak_power_w,time_to_peak_ms," +
+                    "rowing_distance_m,rowing_elapsed_ms,rowing_pace_500_ms,rowing_avg_pace_500_ms,rowing_stroke_rate_spm," +
+                    "battery_start_percent,battery_end_percent",
+            )
             history.forEach { entry ->
                 val durationSeconds = ((entry.endedAtMillis - entry.startedAtMillis).coerceAtLeast(0L) / 1000.0)
                 appendLine(
@@ -808,6 +850,14 @@ class VoltraViewModel(
                         csv(entry.sets.toString()),
                         csv(entry.reps.toString()),
                         csv(entry.peakForceN?.let { "%.1f".format(Locale.US, it) }.orEmpty()),
+                        csv(entry.peakForceLb?.let { "%.1f".format(Locale.US, it) }.orEmpty()),
+                        csv(entry.peakPowerWatts?.toString().orEmpty()),
+                        csv(entry.timeToPeakMillis?.toString().orEmpty()),
+                        csv(entry.rowingDistanceMeters?.let { "%.1f".format(Locale.US, it) }.orEmpty()),
+                        csv(entry.rowingElapsedMillis?.toString().orEmpty()),
+                        csv(entry.rowingPace500Millis?.toString().orEmpty()),
+                        csv(entry.rowingAveragePace500Millis?.toString().orEmpty()),
+                        csv(entry.rowingStrokeRateSpm?.toString().orEmpty()),
                         csv(entry.batteryStartPercent?.toString().orEmpty()),
                         csv(entry.batteryEndPercent?.toString().orEmpty()),
                     ).joinToString(","),
@@ -907,6 +957,14 @@ class VoltraViewModel(
         val reps: Int = 0,
         val sets: Int = 0,
         val peakForceN: Double? = null,
+        val peakForceLb: Double? = null,
+        val peakPowerWatts: Int? = null,
+        val timeToPeakMillis: Long? = null,
+        val rowingDistanceMeters: Double? = null,
+        val rowingElapsedMillis: Long? = null,
+        val rowingPace500Millis: Long? = null,
+        val rowingAveragePace500Millis: Long? = null,
+        val rowingStrokeRateSpm: Int? = null,
     ) {
         fun updatedWith(current: VoltraSessionState): ActiveWorkoutDraft {
             val reading = current.reading
@@ -917,12 +975,39 @@ class VoltraViewModel(
                 reps = maxOf(reps, reading.repCount ?: 0),
                 sets = maxOf(sets, reading.setCount ?: 0),
                 peakForceN = maxNullable(peakForceN, reading.isometricPeakForceN),
+                peakForceLb = maxNullable(peakForceLb, reading.workoutPeakForceLb),
+                peakPowerWatts = maxNullableInt(peakPowerWatts, reading.workoutPeakPowerWatts),
+                timeToPeakMillis = reading.workoutTimeToPeakMillis ?: timeToPeakMillis,
+                rowingDistanceMeters = maxNullable(rowingDistanceMeters, reading.rowingDistanceMeters),
+                rowingElapsedMillis = maxNullableLong(rowingElapsedMillis, reading.rowingElapsedMillis),
+                rowingPace500Millis = reading.rowingPace500Millis ?: rowingPace500Millis,
+                rowingAveragePace500Millis = reading.rowingAveragePace500Millis ?: rowingAveragePace500Millis,
+                rowingStrokeRateSpm = maxNullableInt(rowingStrokeRateSpm, reading.rowingStrokeRateSpm),
             )
         }
 
-        fun hasActivity(): Boolean = reps > 0 || sets > 0 || peakForceN != null
+        fun hasActivity(): Boolean =
+            reps > 0 ||
+                sets > 0 ||
+                peakForceN != null ||
+                peakForceLb != null ||
+                peakPowerWatts != null ||
+                (rowingDistanceMeters ?: 0.0) > 0.0 ||
+                (rowingElapsedMillis ?: 0L) > 0L
 
         private fun maxNullable(left: Double?, right: Double?): Double? = when {
+            left == null -> right
+            right == null -> left
+            else -> maxOf(left, right)
+        }
+
+        private fun maxNullableInt(left: Int?, right: Int?): Int? = when {
+            left == null -> right
+            right == null -> left
+            else -> maxOf(left, right)
+        }
+
+        private fun maxNullableLong(left: Long?, right: Long?): Long? = when {
             left == null -> right
             right == null -> left
             else -> maxOf(left, right)

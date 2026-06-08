@@ -77,6 +77,42 @@ class VoltraNotificationParserTest {
     }
 
     @Test
+    fun extractsDeviceNameFromReadDeviceNameResponse() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(),
+            value = "552a083f1001000020004f00566f6c74726120556e6974203031000000000000001020ba9705da027346"
+                .hexToByteArray(),
+            nowMillis = 4550L,
+        )
+
+        assertEquals("Voltra Unit 01", reading.deviceName)
+        assertEquals(4550L, reading.lastUpdatedMillis)
+    }
+
+    @Test
+    fun extractsOverdrive250CapabilityFromReportedParams() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(),
+            value = paramUpdateFrame(
+                VoltraControlFrames.PARAM_FEATURE_LIST_02 to uint32Le(1),
+                VoltraControlFrames.PARAM_OVERDRIVE_AVAILABLE to uint8(1),
+                VoltraControlFrames.PARAM_OVERDRIVE_USER_CFG_FORCE_MAX to uint16Le(250),
+                VoltraControlFrames.PARAM_OVERDRIVE_ACTIVE_STATUS to uint8(1),
+                VoltraControlFrames.PARAM_EP_MAX_ALLOWED_FORCE to uint16Le(200),
+            ),
+            nowMillis = 4580L,
+        )
+
+        assertEquals(1L, reading.featureList02Raw)
+        assertEquals(true, reading.overdriveAvailable)
+        assertEquals(250.0, reading.overdriveUserConfiguredMaxForceLb)
+        assertEquals(1, reading.overdriveActiveStatus)
+        assertEquals(200.0, reading.maxAllowedForceLb)
+        assertEquals(true, reading.supportsOverdrive250Lb)
+        assertEquals(250.0, reading.maxTargetLoadLb)
+    }
+
+    @Test
     fun extractsIsometricBodyWeightAndMetricsTypeFromParamUpdates() {
         val withBodyWeight = VoltraNotificationParser.mergeReading(
             current = VoltraReading(),
@@ -903,6 +939,55 @@ class VoltraNotificationParserTest {
         assertEquals(4, safety.fitnessMode)
         assertEquals(1, safety.workoutState)
         assertEquals(10.0, safety.targetLoadLb)
+    }
+
+    @Test
+    fun blocksTargetAbove200UntilOverdriveCapabilityIsReported() {
+        val reading = VoltraReading(
+            batteryPercent = 80,
+            activationState = "Activated",
+        )
+        val safety = VoltraNotificationParser.mergeSafety(
+            current = VoltraSafetyState(),
+            reading = reading,
+            value = paramUpdateFrame(
+                VoltraControlFrames.PARAM_BP_BASE_WEIGHT to uint16Le(225),
+                VoltraControlFrames.PARAM_BP_SET_FITNESS_MODE to uint16Le(VoltraControlFrames.FITNESS_MODE_STRENGTH_READY),
+                VoltraControlFrames.PARAM_FITNESS_WORKOUT_STATE to uint8(VoltraControlFrames.WORKOUT_STATE_ACTIVE),
+            ),
+        )
+
+        assertFalse(safety.canLoad)
+        assertEquals(200.0, safety.maxTargetLoadLb)
+        assertTrue(safety.reasons.any { it.contains("above 200 lb") })
+    }
+
+    @Test
+    fun opensSafetyGateForReportedOverdrive250Target() {
+        val reading = VoltraReading(
+            batteryPercent = 80,
+            activationState = "Activated",
+        )
+        val safety = VoltraNotificationParser.mergeSafety(
+            current = VoltraSafetyState(),
+            reading = reading,
+            value = paramUpdateFrame(
+                VoltraControlFrames.PARAM_FEATURE_LIST_02 to uint32Le(1),
+                VoltraControlFrames.PARAM_OVERDRIVE_AVAILABLE to uint8(1),
+                VoltraControlFrames.PARAM_OVERDRIVE_USER_CFG_FORCE_MAX to uint16Le(250),
+                VoltraControlFrames.PARAM_OVERDRIVE_ACTIVE_STATUS to uint8(1),
+                VoltraControlFrames.PARAM_BP_BASE_WEIGHT to uint16Le(225),
+                VoltraControlFrames.PARAM_BP_SET_FITNESS_MODE to uint16Le(VoltraControlFrames.FITNESS_MODE_STRENGTH_READY),
+                VoltraControlFrames.PARAM_FITNESS_WORKOUT_STATE to uint8(VoltraControlFrames.WORKOUT_STATE_ACTIVE),
+            ),
+        )
+
+        assertTrue(safety.canLoad)
+        assertEquals(225.0, safety.targetLoadLb)
+        assertEquals(250.0, safety.maxTargetLoadLb)
+        assertEquals(true, safety.supportsOverdrive250Lb)
+        assertEquals(true, safety.overdriveAvailable)
+        assertEquals(250.0, safety.overdriveUserConfiguredMaxForceLb)
     }
 
     @Test
@@ -1917,6 +2002,37 @@ class VoltraNotificationParserTest {
         assertEquals(2L, second.lastUpdatedMillis)
     }
 }
+
+private fun paramUpdateFrame(vararg entries: Pair<Int, ByteArray>): ByteArray {
+    val payload = buildList {
+        add((entries.size and 0xFF).toByte())
+        add(((entries.size ushr 8) and 0xFF).toByte())
+        entries.forEach { (paramId, valueBytes) ->
+            add((paramId and 0xFF).toByte())
+            add(((paramId ushr 8) and 0xFF).toByte())
+            valueBytes.forEach(::add)
+        }
+    }.toByteArray()
+    return VoltraFrameBuilder.build(
+        cmd = VoltraControlFrames.CMD_PARAM_READ,
+        payload = payload,
+        seq = 0x42,
+    )
+}
+
+private fun uint8(value: Int): ByteArray = byteArrayOf(value.toByte())
+
+private fun uint16Le(value: Int): ByteArray = byteArrayOf(
+    (value and 0xFF).toByte(),
+    ((value ushr 8) and 0xFF).toByte(),
+)
+
+private fun uint32Le(value: Long): ByteArray = byteArrayOf(
+    (value and 0xFF).toByte(),
+    ((value ushr 8) and 0xFF).toByte(),
+    ((value ushr 16) and 0xFF).toByte(),
+    ((value ushr 24) and 0xFF).toByte(),
+)
 
 private fun lbToNewtons(pounds: Double): Double = pounds * 4.4482216152605
 

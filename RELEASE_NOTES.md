@@ -1,5 +1,21 @@
 # Release Notes
 
+## Beta 1.2
+
+Beta 1.2 is a polish release. The app now leans harder on the VOLTRA's own live state, so the controls feel less like a separate remote and more like a companion screen that catches up cleanly when you open it mid-workout.
+
+### What's New
+
+- The weight dial now syncs from the VOLTRA's reported target weight when the app connects or receives a mode refresh.
+- Added a clearer control-link state so the app distinguishes between connected, validating, switching modes, and ready.
+- Updated the app label and build metadata to Beta 1.2.
+
+### Improved
+
+- Load controls now use clearer labels when a mode is ready but not loaded.
+- The interface is less likely to show stale local weight values after reconnecting or switching back from another mode.
+- Compared the official app's Isokinetic auto-unload behavior; it appears to be driven by configurable holding-time and target-rep settings, so it stays research-backed for now rather than being blindly enabled.
+
 ## Beta 1.0
 
 Beta 1.0 marks the point where Voltra Controller moves from alpha experimenting into a much more complete daily-use build. The big theme is simple: more modes now behave like real first-class controls instead of protocol experiments.

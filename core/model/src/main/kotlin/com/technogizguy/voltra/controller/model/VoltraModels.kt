@@ -8,9 +8,14 @@ data class Weight(
     val unit: WeightUnit,
 ) {
     fun cappedForV1(): Weight {
+        return cappedForMax(DEFAULT_MAX_TARGET_LB)
+    }
+
+    fun cappedForMax(maxLb: Double): Weight {
+        val safeMaxLb = maxLb.coerceIn(DEFAULT_MAX_TARGET_LB, OVERDRIVE_MAX_TARGET_LB)
         val range = when (unit) {
-            WeightUnit.LB -> 5.0..200.0
-            WeightUnit.KG -> 2.5..90.7
+            WeightUnit.LB -> 5.0..safeMaxLb
+            WeightUnit.KG -> 2.5..(safeMaxLb / POUNDS_PER_KILOGRAM)
         }
         return copy(value = value.coerceIn(range.start, range.endInclusive))
     }
@@ -37,6 +42,8 @@ data class Weight(
 
     private companion object {
         const val POUNDS_PER_KILOGRAM = 2.2046226218
+        const val DEFAULT_MAX_TARGET_LB = 200.0
+        const val OVERDRIVE_MAX_TARGET_LB = 250.0
     }
 }
 
@@ -79,6 +86,7 @@ enum class VoltraConnectionState {
 @Serializable
 data class VoltraReading(
     val batteryPercent: Int? = null,
+    val deviceName: String? = null,
     val firmwareVersion: String? = null,
     val serialNumber: String? = null,
     val activationState: String? = null,
@@ -88,6 +96,16 @@ data class VoltraReading(
     val cableOffsetCm: Double? = null,
     val forceLb: Double? = null,
     val weightLb: Double? = null,
+    val maxTargetLoadLb: Double? = null,
+    val supportsOverdrive250Lb: Boolean? = null,
+    val featureList01Raw: Long? = null,
+    val featureList02Raw: Long? = null,
+    val overdriveAvailable: Boolean? = null,
+    val overdriveActiveStatus: Int? = null,
+    val overdriveUserConfiguredMaxForceLb: Double? = null,
+    val maxAllowedForceLb: Double? = null,
+    val maxChainsPercent: Int? = null,
+    val maxEccentricPercent: Int? = null,
     val resistanceBandMaxForceLb: Double? = null,
     val resistanceBandLengthCm: Double? = null,
     val resistanceBandByRangeOfMotion: Boolean? = null,
@@ -168,6 +186,12 @@ data class VoltraSafetyState(
     val workoutState: Int? = null,
     val fitnessMode: Int? = null,
     val targetLoadLb: Double? = null,
+    val maxTargetLoadLb: Double = 200.0,
+    val supportsOverdrive250Lb: Boolean = false,
+    val featureList02Raw: Long? = null,
+    val overdriveAvailable: Boolean? = null,
+    val overdriveActiveStatus: Int? = null,
+    val overdriveUserConfiguredMaxForceLb: Double? = null,
 )
 
 @Serializable

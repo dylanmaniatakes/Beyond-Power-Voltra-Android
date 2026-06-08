@@ -15,6 +15,7 @@ object VoltraControlFrames {
 
     const val MIN_TARGET_LB = 5
     const val MAX_TARGET_LB = 200
+    const val MAX_OVERDRIVE_TARGET_LB = 250
     const val MIN_EXTRA_WEIGHT_LB = 0
     const val MAX_EXTRA_WEIGHT_LB = 200
     const val MIN_ECCENTRIC_WEIGHT_LB = -200
@@ -53,6 +54,9 @@ object VoltraControlFrames {
     const val PARAM_RESISTANCE_EXPERIENCE = 0x52CA
     const val PARAM_EP_RESISTANCE_BAND_INVERSE = 0x52E3
     const val PARAM_EP_MAX_ALLOWED_FORCE = 0x5314
+    const val PARAM_EP_MAX_ECCENTRIC_PCT = 0x5319
+    const val PARAM_FEATURE_LIST_01 = 0x5355
+    const val PARAM_FEATURE_LIST_02 = 0x53CF
     const val PARAM_POWER_OFF_LOGO_EN = 0x53A6
     const val PARAM_FITNESS_INVERSE_CHAIN = 0x53B0
     const val PARAM_RESISTANCE_BAND_LEN_BY_ROM = 0x53B6
@@ -78,9 +82,14 @@ object VoltraControlFrames {
     const val PARAM_ISOKINETIC_ECC_SPEED_LIMIT = 0x5411
     const val PARAM_ISOKINETIC_ECC_CONST_WEIGHT = 0x5412
     const val PARAM_ISOKINETIC_ECC_OVERLOAD_WEIGHT = 0x5413
+    const val PARAM_OVERDRIVE_ACTIVE_STATUS = 0x541D
+    const val PARAM_OVERDRIVE_USER_CFG_FORCE_MAX = 0x541E
+    const val PARAM_OVERDRIVE_AVAILABLE = 0x5421
+    const val PARAM_OVERDRIVE_FIRST_ACTIVE = 0x5425
     const val PARAM_ISOMETRIC_MAX_FORCE = 0x5431
     const val PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX = 0x53A7
     const val PARAM_EP_ROW_CHAIN_GEAR = 0x53AE
+    const val PARAM_EP_MAX_CHAINS_PCT = 0x54D4
     const val MIN_ROWING_SELECTOR_LEVEL = 1
     const val MAX_ROWING_SELECTOR_LEVEL = 10
     const val DEFAULT_ROWING_RESISTANCE_LEVEL = 4
@@ -128,6 +137,8 @@ object VoltraControlFrames {
     const val DEFAULT_CUSTOM_CURVE_RANGE_OF_MOTION_IN = 117
     private const val MAX_CUSTOM_CURVE_WIRE_RANGE_OF_MOTION_TENTHS_IN = 1170
     private const val CUSTOM_CURVE_WIRE_FULL_SCALE_SPAN_LB = 120.0f
+    const val ROWING_READY_SCREEN_ID = 0x3D
+    const val ROWING_READY_ONGOING_UI = 0x0103
     const val ROWING_SCREEN_ID = 0x3E
     const val ROWING_ONGOING_UI = 0x0303
     private const val ROW_ACTION_START_JUST_ROW = 0x03
@@ -157,11 +168,16 @@ object VoltraControlFrames {
     )
     val DEFAULT_CUSTOM_CURVE_POINTS = listOf(0.0f, 0.24696325f, 0.5802966f, 1.0f)
 
-    fun setBaseWeightPayload(weightLb: Int): ByteArray {
-        require(weightLb in MIN_TARGET_LB..MAX_TARGET_LB) {
-            "Target load must be between $MIN_TARGET_LB and $MAX_TARGET_LB lb, got $weightLb."
+    fun setBaseWeightPayload(weightLb: Int, maxTargetLb: Int = MAX_TARGET_LB): ByteArray {
+        val safeMaxTargetLb = normalizedMaxTargetLoadLb(maxTargetLb)
+        require(weightLb in MIN_TARGET_LB..safeMaxTargetLb) {
+            "Target load must be between $MIN_TARGET_LB and $safeMaxTargetLb lb, got $weightLb."
         }
         return paramWritePayload(PARAM_BP_BASE_WEIGHT, uint16Le(weightLb))
+    }
+
+    fun normalizedMaxTargetLoadLb(maxTargetLb: Int): Int {
+        return maxTargetLb.coerceIn(MAX_TARGET_LB, MAX_OVERDRIVE_TARGET_LB)
     }
 
     fun setChainsWeightPayload(weightLb: Int): ByteArray {
@@ -302,6 +318,19 @@ object VoltraControlFrames {
 
     fun rowingSelectorDisplayLevel(wireIndex: Int?): Int? {
         return wireIndex?.takeIf { it in 0..9 }?.plus(1)
+    }
+
+    fun screenStateLabel(
+        appCurrentScreenId: Int?,
+        fitnessOngoingUi: Int?,
+    ): String? {
+        return when {
+            appCurrentScreenId == ROWING_READY_SCREEN_ID && fitnessOngoingUi == ROWING_READY_ONGOING_UI ->
+                "Rowing ready/menu"
+            appCurrentScreenId == ROWING_SCREEN_ID && fitnessOngoingUi == ROWING_ONGOING_UI ->
+                "Rowing live"
+            else -> null
+        }
     }
 
     fun setResistanceBandMaxForcePayload(weightLb: Int): ByteArray {

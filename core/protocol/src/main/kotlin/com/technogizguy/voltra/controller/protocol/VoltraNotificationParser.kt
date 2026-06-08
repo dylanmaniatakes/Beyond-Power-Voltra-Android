@@ -47,11 +47,33 @@ object VoltraNotificationParser {
             .flatMap { segment -> FIRMWARE_REGEX.findAll(segment).map { match -> match.value } }
             .distinct()
             .toList()
+        val deviceName = parseDeviceName(packet)
 
         // Binary extraction: battery and activation state keyed on command ID
         val batteryPct = parseBattery(packet, params)
         val activationState = parseActivationState(packet)
         val baseWeightLb = params.uint16(PARAM_BP_BASE_WEIGHT)?.toDouble()
+        val featureList01Raw = params.uint32Long(PARAM_FEATURE_LIST_01)
+        val featureList02Raw = params.uint32Long(PARAM_FEATURE_LIST_02)
+        val overdriveAvailable = params.uint8(PARAM_OVERDRIVE_AVAILABLE)?.let { it >= 1 }
+        val overdriveActiveStatus = params.uint8(PARAM_OVERDRIVE_ACTIVE_STATUS)
+        val overdriveUserConfiguredMaxForceLb = params.uint16(PARAM_OVERDRIVE_USER_CFG_FORCE_MAX)?.toDouble()
+        val maxAllowedForceLb = params.uint16(PARAM_EP_MAX_ALLOWED_FORCE)?.toDouble()
+        val maxChainsPercent = params.uint8(PARAM_EP_MAX_CHAINS_PCT)
+        val maxEccentricPercent = params.uint8(PARAM_EP_MAX_ECCENTRIC_PCT)
+        val mergedFeatureList02Raw = featureList02Raw ?: current.featureList02Raw
+        val mergedOverdriveAvailable = overdriveAvailable ?: current.overdriveAvailable
+        val mergedOverdriveUserConfiguredMaxForceLb =
+            overdriveUserConfiguredMaxForceLb ?: current.overdriveUserConfiguredMaxForceLb
+        val supportsOverdrive250Lb = supportsOverdrive250Lb(
+            featureList02Raw = mergedFeatureList02Raw,
+            overdriveAvailable = mergedOverdriveAvailable,
+            overdriveUserConfiguredMaxForceLb = mergedOverdriveUserConfiguredMaxForceLb,
+        )
+        val maxTargetLoadLb = resolveMaxTargetLoadLb(
+            supportsOverdrive250Lb = supportsOverdrive250Lb,
+            overdriveUserConfiguredMaxForceLb = mergedOverdriveUserConfiguredMaxForceLb,
+        )
         val chainsWeightLb = params.uint16(PARAM_BP_CHAINS_WEIGHT)?.toDouble()
         val eccentricWeightLb = params.signedInt16FromStoredUint16(PARAM_BP_ECCENTRIC_WEIGHT)?.toDouble()
         val inverseChains = params.uint8(PARAM_FITNESS_INVERSE_CHAIN)?.let { it == 1 }
@@ -211,10 +233,19 @@ object VoltraNotificationParser {
 
         if (
             serial == null &&
+            deviceName == null &&
             firmwareParts.isEmpty() &&
             batteryPct == null &&
             activationState == null &&
             baseWeightLb == null &&
+            featureList01Raw == null &&
+            featureList02Raw == null &&
+            overdriveAvailable == null &&
+            overdriveActiveStatus == null &&
+            overdriveUserConfiguredMaxForceLb == null &&
+            maxAllowedForceLb == null &&
+            maxChainsPercent == null &&
+            maxEccentricPercent == null &&
             chainsWeightLb == null &&
             eccentricWeightLb == null &&
             inverseChains == null &&
@@ -437,6 +468,7 @@ object VoltraNotificationParser {
 
         return current.copy(
             serialNumber = serial ?: current.serialNumber,
+            deviceName = deviceName ?: current.deviceName,
             firmwareVersion = current.firmwareVersion.mergeFirmwareParts(firmwareParts),
             batteryPercent = batteryPct ?: current.batteryPercent,
             activationState = activationState ?: current.activationState,
@@ -444,6 +476,17 @@ object VoltraNotificationParser {
             cableOffsetCm = cableOffsetCm ?: current.cableOffsetCm,
             forceLb = rowingTelemetry?.forceLb ?: customCurveTelemetry?.forceLb ?: wireWeightLb ?: current.forceLb,
             weightLb = baseWeightLb ?: current.weightLb,
+            featureList01Raw = featureList01Raw ?: current.featureList01Raw,
+            featureList02Raw = featureList02Raw ?: current.featureList02Raw,
+            overdriveAvailable = overdriveAvailable ?: current.overdriveAvailable,
+            overdriveActiveStatus = overdriveActiveStatus ?: current.overdriveActiveStatus,
+            overdriveUserConfiguredMaxForceLb =
+                overdriveUserConfiguredMaxForceLb ?: current.overdriveUserConfiguredMaxForceLb,
+            maxAllowedForceLb = maxAllowedForceLb ?: current.maxAllowedForceLb,
+            maxChainsPercent = maxChainsPercent ?: current.maxChainsPercent,
+            maxEccentricPercent = maxEccentricPercent ?: current.maxEccentricPercent,
+            supportsOverdrive250Lb = supportsOverdrive250Lb,
+            maxTargetLoadLb = maxTargetLoadLb,
             resistanceBandMaxForceLb = resistanceBandMaxForceLb ?: current.resistanceBandMaxForceLb,
             resistanceBandLengthCm = resistanceBandLengthCm ?: current.resistanceBandLengthCm,
             resistanceBandByRangeOfMotion = resistanceBandByRangeOfMotion ?: current.resistanceBandByRangeOfMotion,
@@ -671,6 +714,25 @@ object VoltraNotificationParser {
         val fitnessMode = params.uint16(PARAM_BP_SET_FITNESS_MODE) ?: current.fitnessMode
         val workoutState = params.uint8(PARAM_FITNESS_WORKOUT_STATE) ?: current.workoutState
         val targetLoadLb = params.uint16(PARAM_BP_BASE_WEIGHT)?.toDouble() ?: current.targetLoadLb
+        val featureList02Raw = params.uint32Long(PARAM_FEATURE_LIST_02) ?: reading.featureList02Raw ?: current.featureList02Raw
+        val overdriveAvailable = params.uint8(PARAM_OVERDRIVE_AVAILABLE)?.let { it >= 1 }
+            ?: reading.overdriveAvailable
+            ?: current.overdriveAvailable
+        val overdriveActiveStatus = params.uint8(PARAM_OVERDRIVE_ACTIVE_STATUS)
+            ?: reading.overdriveActiveStatus
+            ?: current.overdriveActiveStatus
+        val overdriveUserConfiguredMaxForceLb = params.uint16(PARAM_OVERDRIVE_USER_CFG_FORCE_MAX)?.toDouble()
+            ?: reading.overdriveUserConfiguredMaxForceLb
+            ?: current.overdriveUserConfiguredMaxForceLb
+        val supportsOverdrive250Lb = supportsOverdrive250Lb(
+            featureList02Raw = featureList02Raw,
+            overdriveAvailable = overdriveAvailable,
+            overdriveUserConfiguredMaxForceLb = overdriveUserConfiguredMaxForceLb,
+        )
+        val maxTargetLoadLb = resolveMaxTargetLoadLb(
+            supportsOverdrive250Lb = supportsOverdrive250Lb,
+            overdriveUserConfiguredMaxForceLb = overdriveUserConfiguredMaxForceLb,
+        )
         val inResistanceBand = workoutState == VoltraControlFrames.WORKOUT_STATE_RESISTANCE_BAND
         val workoutSessionActive = workoutState?.let(::isWorkoutSessionActive) == true
         val lowBattery = batteryPercent?.let { it < LOW_BATTERY_THRESHOLD_PERCENT } ?: current.lowBattery
@@ -709,7 +771,7 @@ object VoltraNotificationParser {
                 when {
                     targetLoadLb == null -> add("Target load is not set on the VOLTRA.")
                     targetLoadLb < VoltraControlFrames.MIN_TARGET_LB -> add("Target load is below ${VoltraControlFrames.MIN_TARGET_LB} lb.")
-                    targetLoadLb > VoltraControlFrames.MAX_TARGET_LB -> add("Target load is above ${VoltraControlFrames.MAX_TARGET_LB} lb.")
+                    targetLoadLb > maxTargetLoadLb -> add("Target load is above ${maxTargetLoadLb.roundToInt()} lb.")
                 }
             }
             if (current.locked == true) add("VOLTRA lock is active.")
@@ -725,6 +787,12 @@ object VoltraNotificationParser {
             workoutState = workoutState,
             fitnessMode = fitnessMode,
             targetLoadLb = targetLoadLb,
+            maxTargetLoadLb = maxTargetLoadLb,
+            supportsOverdrive250Lb = supportsOverdrive250Lb,
+            featureList02Raw = featureList02Raw,
+            overdriveAvailable = overdriveAvailable,
+            overdriveActiveStatus = overdriveActiveStatus,
+            overdriveUserConfiguredMaxForceLb = overdriveUserConfiguredMaxForceLb,
         )
     }
 
@@ -757,6 +825,43 @@ object VoltraNotificationParser {
         }
     }
 
+    private fun parseDeviceName(packet: ParsedVoltraPacket): String? {
+        if (packet.commandId != CMD_DEVICE_NAME) return null
+        if (packet.senderId != VOLTRA_RESPONSE_SENDER_ID) return null
+        return packet.payload.printableAsciiSegments()
+            .firstOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.take(VoltraControlFrames.DEVICE_NAME_MAX_BYTES)
+    }
+
+    private fun supportsOverdrive250Lb(
+        featureList02Raw: Long?,
+        overdriveAvailable: Boolean?,
+        overdriveUserConfiguredMaxForceLb: Double?,
+    ): Boolean {
+        return featureList02Raw != null &&
+            featureList02Raw != 0L &&
+            overdriveAvailable == true &&
+            overdriveUserConfiguredMaxForceLb != null &&
+            overdriveUserConfiguredMaxForceLb > VoltraControlFrames.MAX_TARGET_LB
+    }
+
+    private fun resolveMaxTargetLoadLb(
+        supportsOverdrive250Lb: Boolean,
+        overdriveUserConfiguredMaxForceLb: Double?,
+    ): Double {
+        return if (supportsOverdrive250Lb) {
+            (overdriveUserConfiguredMaxForceLb ?: VoltraControlFrames.MAX_TARGET_LB.toDouble())
+                .coerceIn(
+                    VoltraControlFrames.MAX_TARGET_LB.toDouble(),
+                    VoltraControlFrames.MAX_OVERDRIVE_TARGET_LB.toDouble(),
+                )
+        } else {
+            VoltraControlFrames.MAX_TARGET_LB.toDouble()
+        }
+    }
+
     // M-prefix observed in hardware capture: MB10267A2509130256
     private val SERIAL_REGEX = Regex("""M?B[0-9A-Z]{10,}""")
     // BP-prefixed versions are supported for later captures; page 0 already exposes BP module markers.
@@ -767,7 +872,9 @@ object VoltraNotificationParser {
     private const val CMD_COMMON_STATE = 0x74
     private const val CMD_TELEMETRY = 0xAA
     private const val CMD_ACTIVATION = 0xAB
+    private const val CMD_DEVICE_NAME = VoltraControlFrames.CMD_READ_DEVICE_NAME
     private const val CMD_ISOMETRIC_STREAM = 0xB4
+    private const val VOLTRA_RESPONSE_SENDER_ID = 0x10
     private const val BMS_RSOC_PARAM_ID = VoltraControlFrames.PARAM_BMS_RSOC
     private const val BMS_RSOC_LEGACY_PARAM_ID = VoltraControlFrames.PARAM_BMS_RSOC_LEGACY
     private const val PARAM_BP_RUNTIME_POSITION_CM = VoltraControlFrames.PARAM_BP_RUNTIME_POSITION_CM
@@ -791,6 +898,14 @@ object VoltraNotificationParser {
     private const val PARAM_RESISTANCE_BAND_ALGORITHM = VoltraControlFrames.PARAM_RESISTANCE_BAND_ALGORITHM
     private const val PARAM_RESISTANCE_EXPERIENCE = VoltraControlFrames.PARAM_RESISTANCE_EXPERIENCE
     private const val PARAM_EP_RESISTANCE_BAND_INVERSE = VoltraControlFrames.PARAM_EP_RESISTANCE_BAND_INVERSE
+    private const val PARAM_FEATURE_LIST_01 = VoltraControlFrames.PARAM_FEATURE_LIST_01
+    private const val PARAM_FEATURE_LIST_02 = VoltraControlFrames.PARAM_FEATURE_LIST_02
+    private const val PARAM_OVERDRIVE_AVAILABLE = VoltraControlFrames.PARAM_OVERDRIVE_AVAILABLE
+    private const val PARAM_OVERDRIVE_ACTIVE_STATUS = VoltraControlFrames.PARAM_OVERDRIVE_ACTIVE_STATUS
+    private const val PARAM_OVERDRIVE_USER_CFG_FORCE_MAX = VoltraControlFrames.PARAM_OVERDRIVE_USER_CFG_FORCE_MAX
+    private const val PARAM_EP_MAX_ALLOWED_FORCE = VoltraControlFrames.PARAM_EP_MAX_ALLOWED_FORCE
+    private const val PARAM_EP_MAX_CHAINS_PCT = VoltraControlFrames.PARAM_EP_MAX_CHAINS_PCT
+    private const val PARAM_EP_MAX_ECCENTRIC_PCT = VoltraControlFrames.PARAM_EP_MAX_ECCENTRIC_PCT
     private const val PARAM_QUICK_CABLE_ADJUSTMENT = VoltraControlFrames.PARAM_QUICK_CABLE_ADJUSTMENT
     private const val PARAM_WEIGHT_TRAINING_EXTRA_MODE = VoltraControlFrames.PARAM_WEIGHT_TRAINING_EXTRA_MODE
     private const val PARAM_DIRECT_LOAD_ENABLED = VoltraControlFrames.PARAM_DIRECT_LOAD_PRIMARY_STATUS
@@ -1889,6 +2004,10 @@ object VoltraNotificationParser {
 
     private fun Map<Int, Number>.uint32(paramId: Int): Int? {
         return this[paramId]?.toLong()?.takeIf { it in 0L..0xFFFF_FFFFL }?.toInt()
+    }
+
+    private fun Map<Int, Number>.uint32Long(paramId: Int): Long? {
+        return this[paramId]?.toLong()?.takeIf { it in 0L..0xFFFF_FFFFL }
     }
 
     private fun Map<Int, Number>.int16(paramId: Int): Int? {

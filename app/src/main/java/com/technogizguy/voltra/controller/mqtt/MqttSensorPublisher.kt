@@ -307,10 +307,13 @@ class MqttSensorPublisher(
             put("connection_state", textOrBlank(session.connectionState.name))
             put("protocol_status", textOrBlank(session.protocolStatus.name))
             put("status_message", textOrBlank(session.statusMessage))
-            put("device_name", textOrBlank(session.currentDevice?.name))
+            put("device_name", textOrBlank(session.reading.deviceName ?: session.currentDevice?.name))
             put("device_address", textOrBlank(session.currentDevice?.address))
             put("battery_percent", numberOrBlank(session.reading.batteryPercent))
             put("target_load_lb", numberOrBlank(session.reading.weightLb))
+            put("max_target_load_lb", numberOrBlank(session.safety.maxTargetLoadLb))
+            put("overdrive_250_lb", textOrBlank(if (session.safety.supportsOverdrive250Lb) "ON" else "OFF"))
+            put("overdrive_configured_max_force_lb", numberOrBlank(session.safety.overdriveUserConfiguredMaxForceLb))
             put("force_lb", numberOrBlank(session.reading.forceLb))
             put("chains_lb", numberOrBlank(session.reading.chainsWeightLb))
             put("eccentric_lb", numberOrBlank(session.reading.eccentricWeightLb))
@@ -341,10 +344,12 @@ class MqttSensorPublisher(
             "${topics.baseTopic}/connection_state" to session.connectionState.name,
             "${topics.baseTopic}/protocol_status" to session.protocolStatus.name,
             "${topics.baseTopic}/status_message" to session.statusMessage,
-            "${topics.baseTopic}/device_name" to (session.currentDevice?.name ?: ""),
+            "${topics.baseTopic}/device_name" to (session.reading.deviceName ?: session.currentDevice?.name ?: ""),
             "${topics.baseTopic}/device_address" to (session.currentDevice?.address ?: ""),
             "${topics.baseTopic}/battery_percent" to text(session.reading.batteryPercent),
             "${topics.baseTopic}/target_load_lb" to text(session.reading.weightLb ?: session.targetLoad.takeIf { it.unit == WeightUnit.LB }?.value),
+            "${topics.baseTopic}/max_target_load_lb" to text(session.safety.maxTargetLoadLb),
+            "${topics.baseTopic}/overdrive_configured_max_force_lb" to text(session.safety.overdriveUserConfiguredMaxForceLb),
             "${topics.baseTopic}/force_lb" to text(session.reading.forceLb),
             "${topics.baseTopic}/chains_lb" to text(session.reading.chainsWeightLb),
             "${topics.baseTopic}/eccentric_lb" to text(session.reading.eccentricWeightLb),
@@ -359,6 +364,7 @@ class MqttSensorPublisher(
             "${topics.baseTopic}/connected" to if (session.connectionState == VoltraConnectionState.CONNECTED) "ON" else "OFF",
             "${topics.baseTopic}/loaded" to if (VoltraControlFrames.isLoadedFitnessMode(session.safety.fitnessMode)) "ON" else "OFF",
             "${topics.baseTopic}/control_validated" to if (session.controlCommandsEnabled) "ON" else "OFF",
+            "${topics.baseTopic}/overdrive_250_lb" to if (session.safety.supportsOverdrive250Lb) "ON" else "OFF",
         )
     }
 
@@ -459,6 +465,7 @@ private data class DiscoveryBinarySensor(
 private val DISCOVERY_SENSORS = listOf(
     DiscoverySensor("battery", "Battery", "battery_percent", unit = "%", deviceClass = "battery", stateClass = "measurement"),
     DiscoverySensor("target_load", "Target Load", "target_load_lb", unit = "lb", stateClass = "measurement", icon = "mdi:dumbbell"),
+    DiscoverySensor("max_target_load", "Max Target Load", "max_target_load_lb", unit = "lb", stateClass = "measurement", icon = "mdi:gauge"),
     DiscoverySensor("force", "Force", "force_lb", unit = "lb", stateClass = "measurement", icon = "mdi:scale"),
     DiscoverySensor("chains", "Chains", "chains_lb", unit = "lb", stateClass = "measurement", icon = "mdi:link-variant"),
     DiscoverySensor("eccentric", "Eccentric", "eccentric_lb", unit = "lb", stateClass = "measurement", icon = "mdi:arrow-expand-vertical"),
@@ -477,6 +484,7 @@ private val DISCOVERY_BINARY_SENSORS = listOf(
     DiscoveryBinarySensor("connected", "Connected", "connected", icon = "mdi:bluetooth"),
     DiscoveryBinarySensor("loaded", "Loaded", "loaded", icon = "mdi:weight-lifter"),
     DiscoveryBinarySensor("control_validated", "Control Validated", "control_validated", icon = "mdi:shield-check"),
+    DiscoveryBinarySensor("overdrive_250", "Overdrive 250 lb", "overdrive_250_lb", icon = "mdi:speedometer"),
     DiscoveryBinarySensor("inverse_chains", "Inverse Chains", "inverse_chains", icon = "mdi:link"),
 )
 

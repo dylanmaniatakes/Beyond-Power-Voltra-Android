@@ -111,25 +111,32 @@ Custom Curve
     - Enter rowing mode, change damper/drag settings, start/finish a short row.
     - Skip PM5 pairing unless intentionally testing PM5 later.
 
+17. Sled Pull beta
+    - Status: the 2026-06-08 decompiled Android APK from `/Users/ticnitsi/Downloads/Beyond+ (1).apk_Decompiler.com.zip` does not contain Sled Pull labels, enums, or command names. It only shows Rowing/Skiing cardio support.
+    - After joining the beta, capture the stock app entering Sled Pull from a cold connect, changing any visible sled-specific settings, starting/loading, finishing/unloading, and exiting back to another mode.
+    - Export Android diagnostics immediately after the run and note the exact stock app build, firmware version, visible mode label, and whether the feature arrived through a new APK or an in-app/CodePush update.
+    - High-value fields to compare before and after entry: `FITNESS_WORKOUT_STATE` (`0x4FB0`), `BP_SET_FITNESS_MODE` (`0x3E89`), `APP_CUR_SCR_ID`, `FITNESS_ONGOING_UI`, any cardio activity mode/index field, `EP_SCR_SWITCH` (`0x5165`), and any new `0xAA` telemetry family.
+    - Keep Android Sled Pull as capture-only until the selector, load path, and telemetry stream are observed; do not guess from Rowing or Skiing.
+
 ## Safety And State
 
-17. Lock and child lock
+18. Lock and child lock
     - Capture lock off/on if easy to trigger safely.
     - Try no load commands while locked only if the official app does it safely.
 
-18. Battery state
+19. Battery state
     - Capture a normal battery report and a lower battery report if it naturally occurs.
     - Do not intentionally deep-drain the device.
 
-19. Device main menu
+20. Device main menu
     - From the VOLTRA screen, choose Weight Training, Resistance Band, Damper, and settings.
     - Capture Android passive logs while doing this so local state changes can be mapped without writes.
 
-20. Disconnect/reconnect
+21. Disconnect/reconnect
     - Connect, handshake, load, unload, disconnect, reconnect, then export.
     - This catches sequence reset and stale state bugs.
 
-21. Device set counter
+22. Device set counter
     - Weight Training, low safe weight.
     - Complete at least three sets with visible set numbers noted after each set.
     - Export immediately after the third set.
