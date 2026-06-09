@@ -6,7 +6,7 @@ Beta 1.3 is a protocol and beta-feature readiness release. It adds visible suppo
 
 ### What's New
 
-- Added the Cardio page with Row/Ski selection. Row remains active; Ski is visible but start is blocked until the exact stock-app selector command is captured.
+- Added the Cardio page with active Row/Ski selection backed by the stock app's Cardio activity selector.
 - Added automatic 250 lb support when the VOLTRA reports the required overdrive capability flags.
 - Added a Sled Pull placeholder on the Home screen so beta testers can see where the mode will land after selector, load, and telemetry captures are confirmed.
 - Added preliminary profile/user-slot framework and diagnostics notes for newer firmware with multiple users on one VOLTRA.
@@ -16,14 +16,14 @@ Beta 1.3 is a protocol and beta-feature readiness release. It adds visible suppo
 
 - Made several protocol parsing and command-safety updates around mode entry, feature reads, max target load, device naming, and diagnostics export.
 - Expanded Isometric results with additional RFD windows, peak RFD 100ms, time-to-peak, and impulse values.
-- Tightened Cardio behavior so Ski selection no longer sends Row commands or relabels Row telemetry as Ski.
+- Recovered the stock Cardio activity selector (`0x54F5`) and now write Row (`0`) or Ski (`1`) before Cardio entry/start.
 - Fixed the Row/Ski selector state so Ski can be selected without being forced back to Row by the shared Cardio workout state.
 - Updated Direct Load wording across the hold gesture and kept normal Load buttons separate.
 - Improved small-screen layout priority so primary controls stay easier to reach.
 
 ### Notes
 
-- Sled Pull, active Ski start, and profile switching remain capture-only until stock app traffic confirms the exact safe command paths.
+- Sled Pull and profile switching remain capture-only until stock app traffic confirms the exact safe command paths.
 - 250 lb support is not forced. The app only unlocks the higher limit when the VOLTRA reports support.
 
 ## Beta 1.2

@@ -68,10 +68,10 @@ This app is built from BLE captures, public protocol evidence, and community tes
 ### Cardio
 
 - Row mode with Just Row and distance presets
-- Ski mode selector UI
+- Ski mode uses the stock Cardio activity selector before entry/start
 - Live distance, time, pace, average pace, strokes, SPM, and force graphing
 
-Ski is visible because the stock app exposes Row/Ski Cardio selection. Android keeps Ski start blocked until a stock-app selector capture confirms the exact Row/Ski command bytes.
+Ski and Row share the VOLTRA Cardio workout state and telemetry stream. Android writes the recovered stock selector (`0x54F5`: Rowing `0`, Ski `1`) before entering or starting Cardio so the slider and telemetry stay on the selected activity.
 
 ### Sled Pull
 
@@ -121,7 +121,6 @@ These areas are visible or partially scaffolded but should not be treated as ful
 
 - Sled Pull
 - profile/user switching
-- active Ski start from Android
 - any unverified beta-only selector or load path
 
 See [Capture Checklist](./CAPTURE_CHECKLIST.md) and [Protocol Notes](./PROTOCOL_NOTES.md) for the current evidence trail.

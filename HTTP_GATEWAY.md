@@ -150,25 +150,31 @@ curl -X POST \
 
 `POST /v1/commands/mode/isometric`
 
-### Rowing
+### Cardio
 
 `POST /v1/commands/mode/rowing`
+
+`POST /v1/commands/mode/ski`
 
 Example:
 
 ```bash
 curl -X POST \
   -H "X-Voltra-Key: YOUR_KEY" \
-  http://PHONE_IP:8788/v1/commands/mode/isokinetic
+  http://PHONE_IP:8788/v1/commands/mode/rowing
 ```
 
-## Rowing Commands
+## Cardio Commands
 
 ### Start Rowing
 
 `POST /v1/commands/rowing/start`
 
-Body is optional. Omit `target_meters` for Just Row, or pass a supported distance preset.
+### Start Ski
+
+`POST /v1/commands/ski/start`
+
+Body is optional. Omit `target_meters` for Just Row/Just Ski, or pass a supported distance preset.
 
 ```json
 { "target_meters": 500 }

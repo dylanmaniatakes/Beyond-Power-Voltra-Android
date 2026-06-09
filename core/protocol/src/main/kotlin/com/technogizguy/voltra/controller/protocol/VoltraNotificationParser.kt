@@ -106,6 +106,13 @@ object VoltraNotificationParser {
         val rowingSimulatedWearLevel = VoltraControlFrames.rowingSelectorDisplayLevel(
             params.uint8(PARAM_EP_ROW_CHAIN_GEAR),
         )
+        val cardioActivityModeIndex = params.uint8(PARAM_CARDIO_ACTIVITY_MODE)?.takeIf {
+            it == VoltraControlFrames.CARDIO_ACTIVITY_MODE_ROWING ||
+                it == VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING
+        }
+        val skiResistanceLevel = VoltraControlFrames.rowingSelectorDisplayLevel(
+            params.uint8(PARAM_SKI_RESISTANCE_LEVEL),
+        )
         val assistModeEnabled = params.uint8(PARAM_FITNESS_ASSIST_MODE)?.let {
             when (it) {
                 1 -> true
@@ -135,7 +142,8 @@ object VoltraNotificationParser {
         val workoutState = params.uint8(PARAM_FITNESS_WORKOUT_STATE)
         val currentWasInIsometric = current.workoutMode?.startsWith("Isometric") == true
         val currentWasInCustomCurve = current.workoutMode?.startsWith("Custom Curve") == true
-        val currentWasInRowing = current.workoutMode?.startsWith("Rowing") == true
+        val currentWasInCardio = current.workoutMode?.startsWith("Rowing") == true ||
+            current.workoutMode?.startsWith("Ski") == true
         val currentWasInPowerWorkout = current.workoutMode?.startsWith("Damper") == true ||
             current.workoutMode?.startsWith("Isokinetic") == true
         val currentModeIsKnownNonIsometric = current.workoutMode != null && !currentWasInIsometric
@@ -149,7 +157,7 @@ object VoltraNotificationParser {
             workoutState != VoltraControlFrames.WORKOUT_STATE_ROWING
         val packetHasRowingTelemetry =
             (
-                currentWasInRowing && currentHasLiveRowScreen && !packetDeclaresNonRowWorkout ||
+                currentWasInCardio && currentHasLiveRowScreen && !packetDeclaresNonRowWorkout ||
                     rowScreenStateSeen ||
                     packetIsNativeRowState
                 ) &&
@@ -187,7 +195,10 @@ object VoltraNotificationParser {
                 workoutState = workoutState,
             )?.let {
                 if (packetIsRowing) {
-                    rowWorkoutModeLabel(fitnessMode)
+                    rowWorkoutModeLabel(
+                        mode = fitnessMode,
+                        cardioActivityModeIndex = cardioActivityModeIndex ?: current.cardioActivityModeIndex,
+                    )
                 } else {
                     it
                 }
@@ -305,7 +316,7 @@ object VoltraNotificationParser {
             workoutState != null &&
             workoutState != VoltraControlFrames.WORKOUT_STATE_DAMPER &&
             workoutState != VoltraControlFrames.WORKOUT_STATE_ISOKINETIC
-        val leavingRowing = currentWasInRowing &&
+        val leavingRowing = currentWasInCardio &&
             workoutState != null &&
             workoutState != VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
             workoutState != VoltraControlFrames.WORKOUT_STATE_ROWING &&
@@ -497,6 +508,8 @@ object VoltraNotificationParser {
             damperLevelIndex = damperLevelIndex ?: current.damperLevelIndex,
             rowingResistanceLevel = rowingResistanceLevel ?: current.rowingResistanceLevel,
             rowingSimulatedWearLevel = rowingSimulatedWearLevel ?: current.rowingSimulatedWearLevel,
+            cardioActivityModeIndex = cardioActivityModeIndex ?: current.cardioActivityModeIndex,
+            skiResistanceLevel = skiResistanceLevel ?: current.skiResistanceLevel,
             assistModeEnabled = assistModeEnabled ?: current.assistModeEnabled,
             weightTrainingExtraMode = weightTrainingExtraMode ?: current.weightTrainingExtraMode,
             directLoadEnabled = directLoadEnabled ?: current.directLoadEnabled,
@@ -888,6 +901,8 @@ object VoltraNotificationParser {
     private const val PARAM_FITNESS_DAMPER_RATIO_IDX = VoltraControlFrames.PARAM_FITNESS_DAMPER_RATIO_IDX
     private const val PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX = VoltraControlFrames.PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX
     private const val PARAM_EP_ROW_CHAIN_GEAR = VoltraControlFrames.PARAM_EP_ROW_CHAIN_GEAR
+    private const val PARAM_CARDIO_ACTIVITY_MODE = VoltraControlFrames.PARAM_CARDIO_ACTIVITY_MODE
+    private const val PARAM_SKI_RESISTANCE_LEVEL = VoltraControlFrames.PARAM_SKI_RESISTANCE_LEVEL
     private const val PARAM_FITNESS_ASSIST_MODE = VoltraControlFrames.PARAM_FITNESS_ASSIST_MODE
     private const val PARAM_APP_CUR_SCR_ID = VoltraControlFrames.PARAM_APP_CUR_SCR_ID
     private const val PARAM_FITNESS_ONGOING_UI = VoltraControlFrames.PARAM_FITNESS_ONGOING_UI
@@ -1122,7 +1137,8 @@ object VoltraNotificationParser {
         return "$modeText, $stateText"
     }
 
-    private fun rowWorkoutModeLabel(mode: Int?): String {
+    private fun rowWorkoutModeLabel(mode: Int?, cardioActivityModeIndex: Int?): String {
+        val activity = VoltraControlFrames.cardioActivityModeLabel(cardioActivityModeIndex)
         val modeText = when {
             VoltraControlFrames.isLoadEngagedForWorkoutState(mode, VoltraControlFrames.WORKOUT_STATE_ROWING) -> "Live"
             VoltraControlFrames.isLoadEngagedForWorkoutState(mode, VoltraControlFrames.WORKOUT_STATE_ISOMETRIC) -> "Loaded"
@@ -1131,7 +1147,7 @@ object VoltraNotificationParser {
             mode == null -> "state unknown"
             else -> "mode $mode"
         }
-        return "Rowing, $modeText"
+        return "$activity, $modeText"
     }
 
     private fun ParsedVoltraPacket.hasRowingTelemetryPayload(): Boolean {

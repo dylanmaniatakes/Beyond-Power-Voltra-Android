@@ -90,6 +90,8 @@ object VoltraControlFrames {
     const val PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX = 0x53A7
     const val PARAM_EP_ROW_CHAIN_GEAR = 0x53AE
     const val PARAM_EP_MAX_CHAINS_PCT = 0x54D4
+    const val PARAM_CARDIO_ACTIVITY_MODE = 0x54F5
+    const val PARAM_SKI_RESISTANCE_LEVEL = 0x5522
     const val MIN_ROWING_SELECTOR_LEVEL = 1
     const val MAX_ROWING_SELECTOR_LEVEL = 10
     const val DEFAULT_ROWING_RESISTANCE_LEVEL = 4
@@ -144,6 +146,8 @@ object VoltraControlFrames {
     private const val ROW_ACTION_START_JUST_ROW = 0x03
     private const val ROW_ACTION_SELECT_JUST_ROW = 0x04
     private const val ROW_ACTION_START_SELECTED_DISTANCE = 0x06
+    const val CARDIO_ACTIVITY_MODE_ROWING = 0
+    const val CARDIO_ACTIVITY_MODE_SKIING = 1
     private val CUSTOM_CURVE_WIRE_X_POINTS = listOf(
         0.16903418f,
         0.33806837f,
@@ -307,6 +311,27 @@ object VoltraControlFrames {
             PARAM_EP_ROW_CHAIN_GEAR,
             byteArrayOf(rowingSelectorWireIndex(level).toByte()),
         )
+    }
+
+    fun setCardioActivityModePayload(modeIndex: Int): ByteArray {
+        require(modeIndex == CARDIO_ACTIVITY_MODE_ROWING || modeIndex == CARDIO_ACTIVITY_MODE_SKIING) {
+            "Cardio activity mode must be $CARDIO_ACTIVITY_MODE_ROWING (Rowing) or $CARDIO_ACTIVITY_MODE_SKIING (Skiing), got $modeIndex."
+        }
+        return paramWritePayload(PARAM_CARDIO_ACTIVITY_MODE, byteArrayOf(modeIndex.toByte()))
+    }
+
+    fun setSkiResistanceLevelPayload(level: Int): ByteArray {
+        return paramWritePayload(
+            PARAM_SKI_RESISTANCE_LEVEL,
+            byteArrayOf(rowingSelectorWireIndex(level).toByte()),
+        )
+    }
+
+    fun cardioActivityModeLabel(modeIndex: Int?): String {
+        return when (modeIndex) {
+            CARDIO_ACTIVITY_MODE_SKIING -> "Ski"
+            else -> "Rowing"
+        }
     }
 
     fun rowingSelectorWireIndex(level: Int): Int {

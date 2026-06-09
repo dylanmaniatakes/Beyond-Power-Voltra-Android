@@ -272,6 +272,24 @@ class VoltraFrameBuilderTest {
     }
 
     @Test
+    fun buildsCardioActivitySelectorPayloadsFromStockAppIds() {
+        assertEquals(
+            "0100F55400",
+            VoltraControlFrames.setCardioActivityModePayload(VoltraControlFrames.CARDIO_ACTIVITY_MODE_ROWING)
+                .toHexString(),
+        )
+        assertEquals(
+            "0100F55401",
+            VoltraControlFrames.setCardioActivityModePayload(VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING)
+                .toHexString(),
+        )
+        assertEquals(
+            "0100225503",
+            VoltraControlFrames.setSkiResistanceLevelPayload(4).toHexString(),
+        )
+    }
+
+    @Test
     fun buildsCapturedFiftyMeterRowStartScreenSwitchPayload() {
         assertEquals(
             "01006551063E0001",

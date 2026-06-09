@@ -40,7 +40,11 @@ interface VoltraClient {
 
     suspend fun enterRowMode(): VoltraCommandResult
 
+    suspend fun enterSkiMode(): VoltraCommandResult
+
     suspend fun startRow(targetMeters: Int? = null): VoltraCommandResult
+
+    suspend fun startSki(targetMeters: Int? = null): VoltraCommandResult
 
     suspend fun setRowingResistanceLevel(level: Int): VoltraCommandResult
 

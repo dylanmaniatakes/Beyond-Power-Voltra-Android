@@ -292,10 +292,17 @@ class HttpGatewayServer(
             HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/isokinetic", "Switch the Voltra into Isokinetic."),
             HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/isometric", "Switch the Voltra into Isometric."),
             HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/rowing", "Switch the Voltra into Rowing."),
+            HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/ski", "Switch the Voltra into Ski."),
             HttpGatewayCommandDescriptor(
                 "POST",
                 "/v1/commands/rowing/start",
                 "Start Rowing, optionally using the current preset distance.",
+                buildJsonObject { put("target_meters", 500) },
+            ),
+            HttpGatewayCommandDescriptor(
+                "POST",
+                "/v1/commands/ski/start",
+                "Start Ski, optionally using the current preset distance.",
                 buildJsonObject { put("target_meters", 500) },
             ),
             HttpGatewayCommandDescriptor(
@@ -507,6 +514,8 @@ class HttpGatewayServer(
                     putNullable("rowing_drive_force_lb", reading.rowingDriveForceLb)
                     putNullable("rowing_resistance_level", reading.rowingResistanceLevel)
                     putNullable("rowing_simulated_wear_level", reading.rowingSimulatedWearLevel)
+                    putNullable("cardio_activity_mode_index", reading.cardioActivityModeIndex)
+                    putNullable("ski_resistance_level", reading.skiResistanceLevel)
                     putNullable("set_count", reading.setCount)
                     putNullable("rep_count", reading.repCount)
                     putNullable("rep_phase", reading.repPhase)
@@ -543,7 +552,9 @@ class HttpGatewayServer(
                 "/v1/commands/mode/isokinetic" -> client.enterIsokineticMode()
                 "/v1/commands/mode/isometric" -> client.enterIsometricMode()
                 "/v1/commands/mode/rowing" -> client.enterRowMode()
+                "/v1/commands/mode/ski" -> client.enterSkiMode()
                 "/v1/commands/rowing/start" -> client.startRow(optionalIntField(body, "target_meters"))
+                "/v1/commands/ski/start" -> client.startSki(optionalIntField(body, "target_meters"))
                 "/v1/commands/target-load" -> client.setTargetLoad(weightFromBody(body))
                 "/v1/commands/assist" -> client.setAssistMode(booleanField(body, "enabled"))
                 "/v1/commands/chains" -> client.setChainsWeight(weightFromBody(body))

@@ -432,6 +432,25 @@ class VoltraNotificationParserTest {
     }
 
     @Test
+    fun labelsNativeCardioWorkoutAsSkiWhenActivitySelectorReportsSki() {
+        val reading = VoltraNotificationParser.mergeReading(
+            current = VoltraReading(workoutMode = "Rowing, Monitor"),
+            value = VoltraFrameBuilder.build(
+                cmd = 0x10,
+                payload = "0500893E1500B04F0311503E67540303F55401".hexToByteArray(),
+                seq = 0x63,
+            ),
+            nowMillis = 6285L,
+        )
+
+        assertEquals("Ski, Live", reading.workoutMode)
+        assertEquals(VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING, reading.cardioActivityModeIndex)
+        assertEquals(VoltraControlFrames.ROWING_SCREEN_ID, reading.appCurrentScreenId)
+        assertEquals(VoltraControlFrames.ROWING_ONGOING_UI, reading.fitnessOngoingUi)
+        assertEquals(6285L, reading.lastUpdatedMillis)
+    }
+
+    @Test
     fun extractsRowingMetricsFromAa95SummaryFrames() {
         val reading = VoltraNotificationParser.mergeReading(
             current = VoltraReading(

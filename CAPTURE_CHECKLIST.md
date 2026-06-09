@@ -111,9 +111,9 @@ Custom Curve
 
 16. Rowing
     - Enter rowing mode, change damper/drag settings, start/finish a short row.
-    - Status: the stock Android bundle exposes `setCardioActivityModeForDevice` and `cardioActivityModeIndex`, but the numeric Row/Ski selector frame has not been recovered from the Hermes bundle yet.
-    - Still needed: in the stock app Cardio menu, switch Row -> Ski -> Row before pressing Start, then export diagnostics so Android can compare selector writes around `EP_SCR_SWITCH`, cardio activity mode/index, and any unknown single-parameter writes.
-    - Android should keep Ski start capture-only until this selector write is observed; do not reuse Row start as a Ski command.
+    - Status: the stock Android bundle confirmed `CARDIO_ACTIVITY_MODE` (`0x54F5`) with Rowing `0` and Ski `1`. Android now writes this selector before Cardio entry/start.
+    - Status: the stock Android bundle also exposes `SKI_RESISTANCE_LEVEL` (`0x5522`) as a zero-based `0..9` selector. Android reads/parses it; dedicated Ski resistance UI is still a follow-up.
+    - Still needed: capture Row -> Ski -> Row in the stock app after a firmware update that changes Cardio behavior, plus any Ski-specific resistance changes, so Android can verify no extra selector writes were added.
     - Skip PM5 pairing unless intentionally testing PM5 later.
 
 17. Sled Pull beta

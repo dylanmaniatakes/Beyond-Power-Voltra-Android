@@ -661,21 +661,48 @@ class AndroidVoltraClient(
     }
 
     override suspend fun enterRowMode(): VoltraCommandResult {
+        return enterCardioMode(
+            command = VoltraControlCommand.ENTER_ROW_MODE,
+            cardioActivityMode = VoltraControlFrames.CARDIO_ACTIVITY_MODE_ROWING,
+            activityLabel = "Rowing",
+            modeLabel = "Row Mode",
+            duplicateMessage = "Row Mode entry is already queued.",
+        )
+    }
+
+    override suspend fun enterSkiMode(): VoltraCommandResult {
+        return enterCardioMode(
+            command = VoltraControlCommand.ENTER_SKI_MODE,
+            cardioActivityMode = VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING,
+            activityLabel = "Ski",
+            modeLabel = "Ski Mode",
+            duplicateMessage = "Ski Mode entry is already queued.",
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun enterCardioMode(
+        command: VoltraControlCommand,
+        cardioActivityMode: Int,
+        activityLabel: String,
+        modeLabel: String,
+        duplicateMessage: String,
+    ): VoltraCommandResult {
         val current = mutableState.value
         val currentGatt = gatt
         return when {
             !current.controlCommandsEnabled ->
-                blocked(VoltraControlCommand.ENTER_ROW_MODE, "Row Mode is locked until this session receives a valid VOLTRA notification frame.")
+                blocked(command, "$modeLabel is locked until this session receives a valid VOLTRA notification frame.")
             current.connectionState != VoltraConnectionState.CONNECTED ->
-                blocked(VoltraControlCommand.ENTER_ROW_MODE, "Cannot enter Row Mode while the VOLTRA is not connected.")
+                blocked(command, "Cannot enter $modeLabel while the VOLTRA is not connected.")
             currentGatt == null ->
-                blocked(VoltraControlCommand.ENTER_ROW_MODE, "No active GATT connection.")
-            hasPendingCommand(VoltraControlCommand.ENTER_ROW_MODE) ->
+                blocked(command, "No active GATT connection.")
+            hasPendingCommand(command) ->
                 logCommand(
                     VoltraCommandResult(
-                        command = VoltraControlCommand.ENTER_ROW_MODE,
+                        command = command,
                         status = VoltraCommandStatus.QUEUED,
-                        message = "Row Mode entry is already queued.",
+                        message = duplicateMessage,
                         timestampMillis = System.currentTimeMillis(),
                     ),
                 )
@@ -691,7 +718,8 @@ class AndroidVoltraClient(
                 mutableState.update {
                     it.copy(
                         reading = it.reading.clearIsometricTestState().clearRowingState().copy(
-                            workoutMode = "Rowing, Starting",
+                            workoutMode = "$activityLabel, Starting",
+                            cardioActivityModeIndex = cardioActivityMode,
                             rowingTelemetryStartMillis = now,
                             rowingResistanceLevel = rowingResistanceLevel,
                             rowingSimulatedWearLevel = rowingSimulatedWearLevel,
@@ -701,7 +729,7 @@ class AndroidVoltraClient(
                         ),
                         safety = it.safety.copy(
                             canLoad = true,
-                            reasons = listOf("Starting Row Mode."),
+                            reasons = listOf("Starting $modeLabel."),
                             parsedDeviceState = true,
                             workoutState = VoltraControlFrames.WORKOUT_STATE_ROWING,
                             fitnessMode = VoltraControlFrames.FITNESS_MODE_STRENGTH_READY,
@@ -711,11 +739,11 @@ class AndroidVoltraClient(
                 }
                 val result = sendTransportFrames(
                     gatt = currentGatt,
-                    command = VoltraControlCommand.ENTER_ROW_MODE,
+                    command = command,
                     frames = buildList {
                         add(
                             QueuedFrameSpec(
-                                label = "subscribe Row fitness data stream",
+                                label = "subscribe $activityLabel fitness data stream",
                                 bytes = VoltraFrameBuilder.build(
                                     cmd = VoltraControlFrames.CMD_PARAM_WRITE,
                                     payload = VoltraControlFrames.setFitnessDataNotifySubscribePayload(),
@@ -725,7 +753,7 @@ class AndroidVoltraClient(
                         )
                         add(
                             QueuedFrameSpec(
-                                label = "bulk subscribe Row params",
+                                label = "bulk subscribe $activityLabel params",
                                 bytes = VoltraFrameBuilder.build(
                                     cmd = VoltraControlFrames.CMD_BULK_PARAM_WRITE,
                                     payload = VoltraControlFrames.rowBulkSubscribePayload(),
@@ -735,7 +763,7 @@ class AndroidVoltraClient(
                         )
                         add(
                             QueuedFrameSpec(
-                                label = "set Row fitness data notify hz",
+                                label = "set $activityLabel fitness data notify hz",
                                 bytes = VoltraFrameBuilder.build(
                                     cmd = VoltraControlFrames.CMD_PARAM_WRITE,
                                     payload = VoltraControlFrames.setFitnessDataNotifyHzPayload(),
@@ -745,27 +773,39 @@ class AndroidVoltraClient(
                         )
                         add(
                             QueuedFrameSpec(
-                                label = "set Row resistance level ($rowingResistanceLevel)",
+                                label = "set Cardio activity mode ($activityLabel=$cardioActivityMode)",
                                 bytes = VoltraFrameBuilder.build(
                                     cmd = VoltraControlFrames.CMD_PARAM_WRITE,
-                                    payload = VoltraControlFrames.setRowingResistanceLevelPayload(rowingResistanceLevel),
+                                    payload = VoltraControlFrames.setCardioActivityModePayload(cardioActivityMode),
                                     seq = controlSeq++,
                                 ),
                             ),
                         )
-                        add(
-                            QueuedFrameSpec(
-                                label = "set Row simulated wear ($rowingSimulatedWearLevel)",
-                                bytes = VoltraFrameBuilder.build(
-                                    cmd = VoltraControlFrames.CMD_PARAM_WRITE,
-                                    payload = VoltraControlFrames.setRowingSimulatedWearLevelPayload(rowingSimulatedWearLevel),
-                                    seq = controlSeq++,
+                        if (cardioActivityMode == VoltraControlFrames.CARDIO_ACTIVITY_MODE_ROWING) {
+                            add(
+                                QueuedFrameSpec(
+                                    label = "set Row resistance level ($rowingResistanceLevel)",
+                                    bytes = VoltraFrameBuilder.build(
+                                        cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                                        payload = VoltraControlFrames.setRowingResistanceLevelPayload(rowingResistanceLevel),
+                                        seq = controlSeq++,
+                                    ),
                                 ),
-                            ),
-                        )
+                            )
+                            add(
+                                QueuedFrameSpec(
+                                    label = "set Row simulated wear ($rowingSimulatedWearLevel)",
+                                    bytes = VoltraFrameBuilder.build(
+                                        cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                                        payload = VoltraControlFrames.setRowingSimulatedWearLevelPayload(rowingSimulatedWearLevel),
+                                        seq = controlSeq++,
+                                    ),
+                                ),
+                            )
+                        }
                         add(
                             QueuedFrameSpec(
-                                label = "enter Row Mode (FITNESS_WORKOUT_STATE=3)",
+                                label = "enter $modeLabel (FITNESS_WORKOUT_STATE=3)",
                                 bytes = VoltraFrameBuilder.build(
                                     cmd = VoltraControlFrames.CMD_PARAM_WRITE,
                                     payload = VoltraControlFrames.enterRowPayload(),
@@ -775,7 +815,7 @@ class AndroidVoltraClient(
                         )
                         add(
                             QueuedFrameSpec(
-                                label = "refresh Row monitor stream (AA13 01)",
+                                label = "refresh $activityLabel monitor stream (AA13 01)",
                                 bytes = VoltraFrameBuilder.build(
                                     cmd = VoltraControlFrames.CMD_VENDOR,
                                     payload = VoltraControlFrames.vendorStateRefreshPayload(),
@@ -785,7 +825,7 @@ class AndroidVoltraClient(
                         )
                         add(
                             QueuedFrameSpec(
-                                label = "read Row mode feature state",
+                                label = "read $activityLabel mode feature state",
                                 bytes = VoltraFrameBuilder.build(
                                     cmd = VoltraControlFrames.CMD_PARAM_READ,
                                     payload = VoltraControlFrames.readParamsPayload(*MODE_FEATURE_STATUS_PARAMS.toIntArray()),
@@ -794,7 +834,7 @@ class AndroidVoltraClient(
                             ),
                         )
                     },
-                    label = "start Row Mode",
+                    label = "start $modeLabel",
                 )
                 if (result.status != VoltraCommandStatus.BLOCKED && result.status != VoltraCommandStatus.FAILED) {
                     requestIsometricVendorRefreshBurst(ROW_VENDOR_REFRESH_BURST_MILLIS)
@@ -805,21 +845,50 @@ class AndroidVoltraClient(
     }
 
     override suspend fun startRow(targetMeters: Int?): VoltraCommandResult {
+        return startCardio(
+            command = VoltraControlCommand.START_ROW,
+            cardioActivityMode = VoltraControlFrames.CARDIO_ACTIVITY_MODE_ROWING,
+            activityLabel = "Row",
+            workoutLabel = "Rowing",
+            justLabel = "Just Row",
+            targetMeters = targetMeters,
+        )
+    }
+
+    override suspend fun startSki(targetMeters: Int?): VoltraCommandResult {
+        return startCardio(
+            command = VoltraControlCommand.START_SKI,
+            cardioActivityMode = VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING,
+            activityLabel = "Ski",
+            workoutLabel = "Ski",
+            justLabel = "Just Ski",
+            targetMeters = targetMeters,
+        )
+    }
+
+    private fun startCardio(
+        command: VoltraControlCommand,
+        cardioActivityMode: Int,
+        activityLabel: String,
+        workoutLabel: String,
+        justLabel: String,
+        targetMeters: Int?,
+    ): VoltraCommandResult {
         val current = mutableState.value
         val currentGatt = gatt
         return when {
             !current.controlCommandsEnabled ->
-                blocked(VoltraControlCommand.START_ROW, "Just Row is locked until this session receives a valid VOLTRA notification frame.")
+                blocked(command, "$justLabel is locked until this session receives a valid VOLTRA notification frame.")
             current.connectionState != VoltraConnectionState.CONNECTED ->
-                blocked(VoltraControlCommand.START_ROW, "Cannot start Just Row while the VOLTRA is not connected.")
+                blocked(command, "Cannot start $justLabel while the VOLTRA is not connected.")
             currentGatt == null ->
-                blocked(VoltraControlCommand.START_ROW, "No active GATT connection.")
-            hasPendingCommand(VoltraControlCommand.START_ROW) ->
+                blocked(command, "No active GATT connection.")
+            hasPendingCommand(command) ->
                 logCommand(
                     VoltraCommandResult(
-                        command = VoltraControlCommand.START_ROW,
+                        command = command,
                         status = VoltraCommandStatus.QUEUED,
-                        message = "Just Row start is already queued.",
+                        message = "$justLabel start is already queued.",
                         timestampMillis = System.currentTimeMillis(),
                     ),
                 )
@@ -828,12 +897,17 @@ class AndroidVoltraClient(
                     .toString(16)
                     .uppercase()
                     .padStart(2, '0')
-                queueStartRow(
+                queueStartCardio(
                     currentGatt,
                     includeEnterRow = current.safety.workoutState != VoltraControlFrames.WORKOUT_STATE_ROWING,
+                    command = command,
+                    cardioActivityMode = cardioActivityMode,
+                    activityLabel = activityLabel,
+                    workoutLabel = workoutLabel,
+                    justLabel = justLabel,
                     targetMeters = targetMeters,
-                    label = targetMeters?.let { "start $it m Row (EP_SCR_SWITCH=$rowStartActionHex 3E 00 01)" }
-                        ?: "start Just Row (EP_SCR_SWITCH=04 3E 00 01 + $rowStartActionHex 3E 00 01)",
+                    label = targetMeters?.let { "start $it m $activityLabel (EP_SCR_SWITCH=$rowStartActionHex 3E 00 01)" }
+                        ?: "start $justLabel (EP_SCR_SWITCH=04 3E 00 01 + $rowStartActionHex 3E 00 01)",
                 )
             }
         }
@@ -846,16 +920,24 @@ class AndroidVoltraClient(
             if (!current.controlCommandsEnabled) return@postDelayed
             if (current.connectionState != VoltraConnectionState.CONNECTED) return@postDelayed
             if (hasPendingCommand(VoltraControlCommand.ENTER_ROW_MODE) || hasPendingCommand(VoltraControlCommand.START_ROW)) return@postDelayed
-            val inRowContext = current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING ||
-                current.reading.workoutMode?.startsWith("Rowing") == true
+            val inRowContext = current.reading.cardioActivityModeIndex != VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING &&
+                (
+                    current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING ||
+                        current.reading.workoutMode?.startsWith("Rowing") == true
+                    )
             if (!inRowContext) return@postDelayed
             val hasRowTelemetry = current.reading.rowingDistanceMeters != null ||
                 current.reading.rowingElapsedMillis != null ||
                 current.reading.rowingStrokeRateSpm != null
             if (hasRowTelemetry) return@postDelayed
-            queueStartRow(
+            queueStartCardio(
                 gatt = currentGatt,
                 includeEnterRow = current.safety.workoutState != VoltraControlFrames.WORKOUT_STATE_ROWING,
+                command = VoltraControlCommand.START_ROW,
+                cardioActivityMode = VoltraControlFrames.CARDIO_ACTIVITY_MODE_ROWING,
+                activityLabel = "Row",
+                workoutLabel = "Rowing",
+                justLabel = "Just Row",
                 targetMeters = null,
                 label = "auto start Just Row",
             )
@@ -863,11 +945,16 @@ class AndroidVoltraClient(
     }
 
     @SuppressLint("MissingPermission")
-    private fun queueStartRow(
+    private fun queueStartCardio(
         gatt: BluetoothGatt,
         includeEnterRow: Boolean,
+        command: VoltraControlCommand,
+        cardioActivityMode: Int,
+        activityLabel: String,
+        workoutLabel: String,
+        justLabel: String,
         targetMeters: Int?,
-        label: String = "start Just Row",
+        label: String,
     ): VoltraCommandResult {
         val now = System.currentTimeMillis()
         val attemptId = nextRowStartAttemptId()
@@ -876,7 +963,7 @@ class AndroidVoltraClient(
             ?: VoltraControlFrames.DEFAULT_ROWING_RESISTANCE_LEVEL
         val rowingSimulatedWearLevel = current.reading.rowingSimulatedWearLevel
             ?: VoltraControlFrames.DEFAULT_ROWING_SIMULATED_WEAR_LEVEL
-        val rowStartTargetLabel = targetMeters?.let { "$it m" } ?: "Just Row"
+        val rowStartTargetLabel = targetMeters?.let { "$it m" } ?: justLabel
         val rowStartActionHex = VoltraControlFrames.rowStartActionCode(targetMeters)
             .toString(16)
             .uppercase()
@@ -884,7 +971,8 @@ class AndroidVoltraClient(
         mutableState.update {
             it.copy(
                 reading = it.reading.clearIsometricTestState().clearRowingState().copy(
-                    workoutMode = "Rowing, Live",
+                    workoutMode = "$workoutLabel, Live",
+                    cardioActivityModeIndex = cardioActivityMode,
                     rowingTelemetryStartMillis = now,
                     rowingResistanceLevel = rowingResistanceLevel,
                     rowingSimulatedWearLevel = rowingSimulatedWearLevel,
@@ -894,7 +982,7 @@ class AndroidVoltraClient(
                 ),
                 safety = it.safety.copy(
                     canLoad = false,
-                    reasons = listOf("$rowStartTargetLabel is live."),
+                    reasons = listOf("$rowStartTargetLabel $activityLabel is live."),
                     parsedDeviceState = true,
                     workoutState = VoltraControlFrames.WORKOUT_STATE_ROWING,
                     fitnessMode = VoltraControlFrames.FITNESS_MODE_ROWING_ACTIVE,
@@ -905,12 +993,22 @@ class AndroidVoltraClient(
 
         val result = sendTransportFrames(
             gatt = gatt,
-            command = VoltraControlCommand.START_ROW,
+            command = command,
             frames = buildList {
+                add(
+                    QueuedFrameSpec(
+                        label = "set Cardio activity mode ($workoutLabel=$cardioActivityMode)",
+                        bytes = VoltraFrameBuilder.build(
+                            cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                            payload = VoltraControlFrames.setCardioActivityModePayload(cardioActivityMode),
+                            seq = controlSeq++,
+                        ),
+                    ),
+                )
                 if (includeEnterRow) {
                     add(
                         QueuedFrameSpec(
-                            label = "enter Row Mode (FITNESS_WORKOUT_STATE=3)",
+                            label = "enter $workoutLabel Mode (FITNESS_WORKOUT_STATE=3)",
                             bytes = VoltraFrameBuilder.build(
                                 cmd = VoltraControlFrames.CMD_PARAM_WRITE,
                                 payload = VoltraControlFrames.enterRowPayload(),
@@ -921,7 +1019,7 @@ class AndroidVoltraClient(
                 }
                 add(
                     QueuedFrameSpec(
-                        label = "trigger Row $rowStartTargetLabel screen action (EP_SCR_SWITCH=$rowStartActionHex 3E 00 01)",
+                        label = "trigger $activityLabel $rowStartTargetLabel screen action (EP_SCR_SWITCH=$rowStartActionHex 3E 00 01)",
                         bytes = VoltraFrameBuilder.build(
                             cmd = VoltraControlFrames.CMD_PARAM_WRITE,
                             payload = VoltraControlFrames.triggerRowStartScreenPayload(targetMeters),
@@ -931,7 +1029,7 @@ class AndroidVoltraClient(
                 )
                 add(
                     QueuedFrameSpec(
-                        label = "refresh Row monitor stream (AA13 01)",
+                        label = "refresh $activityLabel monitor stream (AA13 01)",
                         bytes = VoltraFrameBuilder.build(
                             cmd = VoltraControlFrames.CMD_VENDOR,
                             payload = VoltraControlFrames.vendorStateRefreshPayload(),
@@ -941,7 +1039,7 @@ class AndroidVoltraClient(
                 )
                 add(
                     QueuedFrameSpec(
-                        label = "read Row mode feature state",
+                        label = "read $activityLabel mode feature state",
                         bytes = VoltraFrameBuilder.build(
                             cmd = VoltraControlFrames.CMD_PARAM_READ,
                             payload = VoltraControlFrames.readParamsPayload(*MODE_FEATURE_STATUS_PARAMS.toIntArray()),
@@ -954,9 +1052,36 @@ class AndroidVoltraClient(
         )
         if (result.status != VoltraCommandStatus.BLOCKED && result.status != VoltraCommandStatus.FAILED) {
             requestIsometricVendorRefreshBurst(ROW_VENDOR_REFRESH_BURST_MILLIS)
-            scheduleRowLiveModeReassert(delayMillis = 750L, attemptId = attemptId, targetMeters = targetMeters)
-            scheduleRowLiveModeReassert(delayMillis = 1_750L, attemptId = attemptId, targetMeters = targetMeters)
-            scheduleRowLiveModeReassert(delayMillis = 3_000L, attemptId = attemptId, targetMeters = targetMeters)
+            scheduleRowLiveModeReassert(
+                delayMillis = 750L,
+                attemptId = attemptId,
+                targetMeters = targetMeters,
+                command = command,
+                cardioActivityMode = cardioActivityMode,
+                activityLabel = activityLabel,
+                workoutLabel = workoutLabel,
+                justLabel = justLabel,
+            )
+            scheduleRowLiveModeReassert(
+                delayMillis = 1_750L,
+                attemptId = attemptId,
+                targetMeters = targetMeters,
+                command = command,
+                cardioActivityMode = cardioActivityMode,
+                activityLabel = activityLabel,
+                workoutLabel = workoutLabel,
+                justLabel = justLabel,
+            )
+            scheduleRowLiveModeReassert(
+                delayMillis = 3_000L,
+                attemptId = attemptId,
+                targetMeters = targetMeters,
+                command = command,
+                cardioActivityMode = cardioActivityMode,
+                activityLabel = activityLabel,
+                workoutLabel = workoutLabel,
+                justLabel = justLabel,
+            )
         }
         return result
     }
@@ -1021,21 +1146,33 @@ class AndroidVoltraClient(
         )
     }
 
-    private fun scheduleRowLiveModeReassert(delayMillis: Long, attemptId: Int, targetMeters: Int?) {
+    private fun scheduleRowLiveModeReassert(
+        delayMillis: Long,
+        attemptId: Int,
+        targetMeters: Int?,
+        command: VoltraControlCommand,
+        cardioActivityMode: Int,
+        activityLabel: String,
+        workoutLabel: String,
+        justLabel: String,
+    ) {
         mainHandler.postDelayed({
             if (attemptId != rowStartAttemptId) return@postDelayed
             val current = mutableState.value
             val currentGatt = gatt ?: return@postDelayed
             if (!current.controlCommandsEnabled) return@postDelayed
             if (current.connectionState != VoltraConnectionState.CONNECTED) return@postDelayed
-            if (hasPendingCommand(VoltraControlCommand.START_ROW)) return@postDelayed
+            if (hasPendingCommand(command)) return@postDelayed
             if (hasPendingCommand(VoltraControlCommand.UNLOAD) || hasPendingCommand(VoltraControlCommand.EXIT_WORKOUT)) {
                 return@postDelayed
             }
 
             val inRowContext =
                 current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING &&
-                    current.reading.workoutMode?.startsWith("Rowing") == true
+                    (
+                        current.reading.cardioActivityModeIndex == cardioActivityMode ||
+                            current.reading.workoutMode?.startsWith(workoutLabel) == true
+                        )
             if (!inRowContext) return@postDelayed
 
             val rowIsLive =
@@ -1046,7 +1183,7 @@ class AndroidVoltraClient(
                     current.reading.appCurrentScreenId == VoltraControlFrames.ROWING_SCREEN_ID &&
                     current.reading.fitnessOngoingUi == VoltraControlFrames.ROWING_ONGOING_UI
             if (rowIsLive) return@postDelayed
-            val rowStartTargetLabel = targetMeters?.let { "$it m" } ?: "Just Row"
+            val rowStartTargetLabel = targetMeters?.let { "$it m" } ?: justLabel
             val rowStartActionHex = VoltraControlFrames.rowStartActionCode(targetMeters)
                 .toString(16)
                 .uppercase()
@@ -1054,11 +1191,21 @@ class AndroidVoltraClient(
 
             sendTransportFrames(
                 gatt = currentGatt,
-                command = VoltraControlCommand.START_ROW,
+                command = command,
                 frames = buildList {
                     add(
                         QueuedFrameSpec(
-                            label = "retrigger Row $rowStartTargetLabel screen action before live reassert (EP_SCR_SWITCH=$rowStartActionHex 3E 00 01)",
+                            label = "reassert Cardio activity mode ($workoutLabel=$cardioActivityMode)",
+                            bytes = VoltraFrameBuilder.build(
+                                cmd = VoltraControlFrames.CMD_PARAM_WRITE,
+                                payload = VoltraControlFrames.setCardioActivityModePayload(cardioActivityMode),
+                                seq = controlSeq++,
+                            ),
+                        ),
+                    )
+                    add(
+                        QueuedFrameSpec(
+                            label = "retrigger $activityLabel $rowStartTargetLabel screen action before live reassert (EP_SCR_SWITCH=$rowStartActionHex 3E 00 01)",
                             bytes = VoltraFrameBuilder.build(
                                 cmd = VoltraControlFrames.CMD_PARAM_WRITE,
                                 payload = VoltraControlFrames.triggerRowStartScreenPayload(targetMeters),
@@ -1068,7 +1215,7 @@ class AndroidVoltraClient(
                     )
                     add(
                         QueuedFrameSpec(
-                            label = "refresh Row monitor stream after live reassert (AA13 01)",
+                            label = "refresh $activityLabel monitor stream after live reassert (AA13 01)",
                             bytes = VoltraFrameBuilder.build(
                                 cmd = VoltraControlFrames.CMD_VENDOR,
                                 payload = VoltraControlFrames.vendorStateRefreshPayload(),
@@ -1078,7 +1225,7 @@ class AndroidVoltraClient(
                     )
                     add(
                         QueuedFrameSpec(
-                            label = "read Row mode feature state after live reassert",
+                            label = "read $activityLabel mode feature state after live reassert",
                             bytes = VoltraFrameBuilder.build(
                                 cmd = VoltraControlFrames.CMD_PARAM_READ,
                                 payload = VoltraControlFrames.readParamsPayload(*MODE_FEATURE_STATUS_PARAMS.toIntArray()),
@@ -1087,7 +1234,7 @@ class AndroidVoltraClient(
                         ),
                     )
                 },
-                label = "reassert Just Row live mode",
+                label = "reassert $justLabel live mode",
             )
         }, delayMillis)
     }
@@ -2051,7 +2198,7 @@ class AndroidVoltraClient(
         val livePullInProgress = current.reading.isometricCurrentForceN != null
         val rowMonitorActive =
             current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING &&
-                current.reading.workoutMode?.startsWith("Rowing") == true &&
+                current.reading.workoutMode.isCardioWorkoutMode() &&
                 refreshWindowOpen
         val directLoadMonitorActive =
             current.safety.workoutState in setOf(
@@ -2251,10 +2398,10 @@ class AndroidVoltraClient(
             currentGatt == null ->
                 blocked(VoltraControlCommand.LOAD, "No active GATT connection.")
             current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC &&
-                current.reading.workoutMode?.startsWith("Rowing") == true -> {
+                current.reading.workoutMode.isCardioWorkoutMode() -> {
                 blocked(
                     VoltraControlCommand.LOAD,
-                    "Row Mode starts from the Rowing screen. Use Start Row instead of Load.",
+                    "Cardio starts from the Cardio screen. Use Start instead of Load.",
                 )
             }
             !current.safety.canLoad ->
@@ -2512,14 +2659,15 @@ class AndroidVoltraClient(
                 pendingIsometricAutoLoad = false
                 stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
                 if (
-                    current.reading.workoutMode?.startsWith("Rowing") == true ||
+                    current.reading.workoutMode.isCardioWorkoutMode() ||
                     current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING
                 ) {
+                    val activityLabel = current.reading.cardioActivityLabel()
                     cancelPendingRowStartReasserts()
                     mutableState.update {
                         it.copy(
                             reading = it.reading.copy(
-                                workoutMode = "Rowing, Ready",
+                                workoutMode = "$activityLabel, Ready",
                                 rowingTelemetryStartMillis = null,
                                 rowingLastStrokeStartMillis = null,
                                 rowingDriveForceLb = null,
@@ -2527,7 +2675,7 @@ class AndroidVoltraClient(
                             ),
                             safety = it.safety.copy(
                                 canLoad = true,
-                                reasons = listOf("Rowing is ready. Start Row again before another row."),
+                                reasons = listOf("$activityLabel is ready. Start again before another cardio effort."),
                                 parsedDeviceState = true,
                                 workoutState = VoltraControlFrames.WORKOUT_STATE_ROWING,
                                 fitnessMode = VoltraControlFrames.FITNESS_MODE_STRENGTH_READY,
@@ -2735,12 +2883,12 @@ class AndroidVoltraClient(
                 stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
                 val exitingRowing =
                     current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING ||
-                        current.reading.workoutMode?.startsWith("Rowing") == true
+                        current.reading.workoutMode.isCardioWorkoutMode()
                 if (
                     current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ||
                     current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING ||
                     current.reading.workoutMode?.startsWith("Isometric") == true ||
-                    current.reading.workoutMode?.startsWith("Rowing") == true
+                    current.reading.workoutMode.isCardioWorkoutMode()
                 ) {
                     if (
                         exitingRowing
@@ -3543,7 +3691,7 @@ class AndroidVoltraClient(
                     cancelIsometricVendorRefreshBurst()
                 }
                 nextReading = nextReading.clearRowingState().copy(
-                    workoutMode = nextReading.workoutMode?.takeUnless { mode -> mode.startsWith("Rowing") },
+                    workoutMode = nextReading.workoutMode?.takeUnless { mode -> mode.isCardioWorkoutMode() },
                     setCount = 0,
                     repCount = 0,
                     repPhase = "Ready",
@@ -4165,6 +4313,8 @@ class AndroidVoltraClient(
             VoltraControlFrames.PARAM_WEIGHT_TRAINING_EXTRA_MODE,
             VoltraControlFrames.PARAM_FITNESS_ROWING_DAMPER_RATIO_IDX,
             VoltraControlFrames.PARAM_EP_ROW_CHAIN_GEAR,
+            VoltraControlFrames.PARAM_CARDIO_ACTIVITY_MODE,
+            VoltraControlFrames.PARAM_SKI_RESISTANCE_LEVEL,
             VoltraControlFrames.PARAM_APP_CUR_SCR_ID,
             VoltraControlFrames.PARAM_FITNESS_ONGOING_UI,
             VoltraControlFrames.PARAM_BP_SET_FITNESS_MODE,
@@ -4264,8 +4414,20 @@ private fun VoltraReading.clearRowingState(): VoltraReading {
         rowingForceLastChunkIndex = null,
         appCurrentScreenId = null,
         fitnessOngoingUi = null,
-        workoutMode = workoutMode?.takeUnless { it.startsWith("Rowing") },
+        workoutMode = workoutMode?.takeUnless { it.isCardioWorkoutMode() },
     )
+}
+
+private fun String?.isCardioWorkoutMode(): Boolean {
+    return this?.startsWith("Rowing") == true || this?.startsWith("Ski") == true
+}
+
+private fun VoltraReading.cardioActivityLabel(): String {
+    return when {
+        cardioActivityModeIndex == VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING -> "Ski"
+        workoutMode?.startsWith("Ski") == true -> "Ski"
+        else -> "Rowing"
+    }
 }
 
 private fun VoltraReading.hasLiveIsometricAttempt(): Boolean {

@@ -1,4 +1,6 @@
 "id","name","description","unit","valueType","length","defaultValue","min","max","needReboot","category","writable","volatile","submodule"
+21794,"SKI_RESISTANCE_LEVEL","Ski resistance selector index.","-","uint8",1,"3","0","9",0,"BP",1,1,"DEFAULT"
+21749,"CARDIO_ACTIVITY_MODE","Cardio activity mode selector: 0 Rowing, 1 Ski.","-","uint8",1,"0","0","1",0,"BP",1,1,"DEFAULT"
 21731,"FITNESS_REST_TIME_OVERRIDE","Override the fitness rest time.","s","uint16",2,"0","0","65535",0,"BP",1,1,"DEFAULT"
 21730,"MC_IPS_E_AGL_COS_OFFS","MC_IPS_E_AGL_COS_OFFS","-","int16",2,"0","-4095","4095",0,"FM",0,0,"DEFAULT"
 21729,"MC_IPS_E_AGL_SIN_OFFS","MC_IPS_E_AGL_SIN_OFFS","-","int16",2,"0","-4095","4095",0,"FM",0,0,"DEFAULT"

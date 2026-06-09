@@ -269,6 +269,10 @@ class VoltraViewModel(
 
     fun enterSkiMode() {
         beginWorkoutSessionFor(ControlModeUi.SKI)
+        viewModelScope.launch {
+            client.enterSkiMode()
+            refreshModeTargetLoadAfterEntry()
+        }
     }
 
     fun startRow(targetMeters: Int? = null) {
@@ -276,12 +280,12 @@ class VoltraViewModel(
             ControlModeUi.SKI -> ControlModeUi.SKI
             else -> ControlModeUi.ROWING
         }
-        if (activeCardioMode == ControlModeUi.SKI) {
-            return
-        }
         beginWorkoutSessionFor(activeCardioMode)
         viewModelScope.launch {
-            client.startRow(targetMeters)
+            when (activeCardioMode) {
+                ControlModeUi.SKI -> client.startSki(targetMeters)
+                else -> client.startRow(targetMeters)
+            }
             refreshModeTargetLoadAfterEntry()
         }
     }

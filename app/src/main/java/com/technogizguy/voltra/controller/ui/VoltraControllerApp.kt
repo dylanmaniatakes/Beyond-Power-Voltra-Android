@@ -745,6 +745,7 @@ fun VoltraControllerApp(
                         onEnterIsometric = viewModel::enterIsometricMode,
                         onEnterCustomCurve = viewModel::enterCustomCurveMode,
                         onEnterRowing = viewModel::enterRowMode,
+                        onEnterSkiing = viewModel::enterSkiMode,
                         onStartRowing = viewModel::startRow,
                         onApplyCustomCurve = viewModel::applyCustomCurve,
                         onRefreshModeFeatureStatus = viewModel::refreshModeFeatureStatus,
@@ -1069,6 +1070,7 @@ private fun ControlScreen(
     onEnterIsometric: () -> Unit,
     onEnterCustomCurve: () -> Unit,
     onEnterRowing: () -> Unit,
+    onEnterSkiing: () -> Unit,
     onStartRowing: (Int?) -> Unit,
     onApplyCustomCurve: (List<Float>, Int, Int, Int) -> Unit,
     onRefreshModeFeatureStatus: () -> Unit,
@@ -1111,6 +1113,8 @@ private fun ControlScreen(
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_RESISTANCE_BAND -> ControlModeUi.RESISTANCE_BAND
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_DAMPER -> ControlModeUi.DAMPER
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE -> ControlModeUi.CUSTOM_CURVE
+        state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING &&
+            state.reading.cardioActivityModeIndex == VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING -> ControlModeUi.SKI
         state.reading.workoutMode?.startsWith("Ski") == true -> ControlModeUi.SKI
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING -> ControlModeUi.ROWING
         inIsokineticFamily -> ControlModeUi.ISOKINETIC
@@ -1140,10 +1144,17 @@ private fun ControlScreen(
         ControlModeUi.CUSTOM_CURVE ->
             state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE
         ControlModeUi.ROWING ->
-            state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING ||
+            (
+                state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING &&
+                    state.reading.cardioActivityModeIndex != VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING
+                ) ||
                 state.reading.workoutMode?.startsWith("Rowing") == true
         ControlModeUi.SKI ->
-            state.reading.workoutMode?.startsWith("Ski") == true
+            (
+                state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING &&
+                    state.reading.cardioActivityModeIndex == VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING
+                ) ||
+                state.reading.workoutMode?.startsWith("Ski") == true
     }
     val modeTitle = when (activeProfile) {
         ControlModeUi.WEIGHT_TRAINING -> "Weight Training"
@@ -1163,7 +1174,7 @@ private fun ControlScreen(
         activeProfile == ControlModeUi.SKI && state.reading.workoutMode?.startsWith("Ski") == true ->
             state.reading.workoutMode ?: "Ski is starting."
         activeProfile == ControlModeUi.SKI ->
-            "Ski selector capture needed before Android can start it safely."
+            state.reading.workoutMode ?: "Switching VOLTRA to Ski..."
         activeProfile == ControlModeUi.ROWING && state.reading.workoutMode?.startsWith("Rowing") == true ->
             state.reading.workoutMode ?: "Rowing is starting."
         activeProfile == ControlModeUi.ROWING && modeSessionMatched ->
@@ -1246,7 +1257,11 @@ private fun ControlScreen(
     val isLoaded = when (activeProfile) {
         ControlModeUi.ISOMETRIC_TEST -> optimisticIsometricLoaded ?: observedIsLoaded
         ControlModeUi.ROWING -> observedRowingLoaded
-        ControlModeUi.SKI -> observedRowingLoaded && state.reading.workoutMode?.startsWith("Ski") == true
+        ControlModeUi.SKI -> observedRowingLoaded &&
+            (
+                state.reading.cardioActivityModeIndex == VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING ||
+                    state.reading.workoutMode?.startsWith("Ski") == true
+                )
         else -> observedIsLoaded
     }
     val canLoadShared = state.controlCommandsEnabled &&
@@ -1724,22 +1739,47 @@ private fun ControlScreen(
         }
     }
 
-    LaunchedEffect(selectedMode, state.connectionState, state.controlCommandsEnabled, state.safety.workoutState) {
+    LaunchedEffect(
+        selectedMode,
+        state.connectionState,
+        state.controlCommandsEnabled,
+        state.safety.workoutState,
+        state.reading.cardioActivityModeIndex,
+        state.reading.workoutMode,
+    ) {
+        val selectedCardioModeIndex = when (selectedMode) {
+            ControlModeUi.SKI -> VoltraControlFrames.CARDIO_ACTIVITY_MODE_SKIING
+            ControlModeUi.ROWING -> VoltraControlFrames.CARDIO_ACTIVITY_MODE_ROWING
+            else -> null
+        }
+        val selectedCardioLabel = when (selectedMode) {
+            ControlModeUi.SKI -> "Ski"
+            ControlModeUi.ROWING -> "Rowing"
+            else -> null
+        }
+        val selectedCardioIsActive = selectedCardioModeIndex != null &&
+            state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING &&
+            (
+                state.reading.cardioActivityModeIndex == selectedCardioModeIndex ||
+                    state.reading.workoutMode?.startsWith(selectedCardioLabel ?: "") == true
+                )
         if (
-            selectedMode == ControlModeUi.ROWING &&
+            selectedCardioModeIndex != null &&
             state.connectionState == VoltraConnectionState.CONNECTED &&
             state.controlCommandsEnabled &&
-            state.safety.workoutState != VoltraControlFrames.WORKOUT_STATE_ROWING &&
-            state.reading.workoutMode?.startsWith("Rowing") != true &&
+            !selectedCardioIsActive &&
             !rowingLaunchRequested
         ) {
             rowingLaunchRequested = true
-            onEnterRowing()
+            if (selectedMode == ControlModeUi.SKI) {
+                onEnterSkiing()
+            } else {
+                onEnterRowing()
+            }
         } else if (
-            selectedMode != ControlModeUi.ROWING ||
+            selectedCardioModeIndex == null ||
             state.connectionState != VoltraConnectionState.CONNECTED ||
-            state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING ||
-            state.reading.workoutMode?.startsWith("Rowing") == true
+            selectedCardioIsActive
         ) {
             rowingLaunchRequested = false
         }
@@ -5973,12 +6013,10 @@ private fun RowingModeCard(
         distanceSamplesMeters.isNotEmpty() ||
         forceSamplesLb.isNotEmpty()
     val hasForceTelemetry = driveForceLb != null || forceSamplesLb.isNotEmpty()
-    val canStartSelectedCardio = controlReady && (!isSki || isLoaded)
+    val canStartSelectedCardio = controlReady
     val rowSettingsEnabled = controlReady && !isSki
     val helperText = when {
         targetReached -> "Target reached. Finish on the VOLTRA or app before starting another $activityNoun."
-        isSki && !isLoaded ->
-            "Ski selector is present in the stock app, but Android needs a captured selector frame before it can start Ski."
         isLoaded && selectedTargetLabel != null && selectedSplitLabel != null ->
             "$selectedTargetLabel $activityNoun is live with $selectedSplitLabel."
         isLoaded && selectedTargetLabel != null -> "$selectedTargetLabel $activityNoun is live from the VOLTRA stream."
@@ -5993,7 +6031,6 @@ private fun RowingModeCard(
     }
     val primaryActionLabel = when {
         isLoaded -> "Finish"
-        isSki -> "Ski Capture Needed"
         hasTelemetry -> startActionLabel
         else -> startActionLabel
     }
