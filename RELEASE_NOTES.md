@@ -17,6 +17,7 @@ Beta 1.3 is a protocol and beta-feature readiness release. It adds visible suppo
 - Made several protocol parsing and command-safety updates around mode entry, feature reads, max target load, device naming, and diagnostics export.
 - Expanded Isometric results with additional RFD windows, peak RFD 100ms, time-to-peak, and impulse values.
 - Tightened Cardio behavior so Ski selection no longer sends Row commands or relabels Row telemetry as Ski.
+- Fixed the Row/Ski selector state so Ski can be selected without being forced back to Row by the shared Cardio workout state.
 - Updated Direct Load wording across the hold gesture and kept normal Load buttons separate.
 - Improved small-screen layout priority so primary controls stay easier to reach.
 

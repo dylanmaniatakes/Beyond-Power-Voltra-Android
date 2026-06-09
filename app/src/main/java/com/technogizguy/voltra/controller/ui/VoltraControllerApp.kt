@@ -1118,7 +1118,6 @@ private fun ControlScreen(
         else -> ControlModeUi.WEIGHT_TRAINING
     }
     val activeProfile = when {
-        selectedMode == ControlModeUi.SKI && reportedProfile == ControlModeUi.ROWING -> reportedProfile
         selectedMode != ControlModeUi.WEIGHT_TRAINING && selectedMode != reportedProfile -> selectedMode
         else -> reportedProfile
     }
