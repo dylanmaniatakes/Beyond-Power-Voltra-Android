@@ -133,7 +133,7 @@ object VoltraNotificationParser {
         val isometricBodyWeightLb = params.uint16(PARAM_EP_ISOMETRIC_TESTING_BODY_WEIGHT_LBS)?.toDouble()
         val fitnessMode = params.uint16(PARAM_BP_SET_FITNESS_MODE)
         val workoutState = params.uint8(PARAM_FITNESS_WORKOUT_STATE)
-        val currentWasInIsometric = current.workoutMode?.startsWith("Isometric Test") == true
+        val currentWasInIsometric = current.workoutMode?.startsWith("Isometric") == true
         val currentWasInCustomCurve = current.workoutMode?.startsWith("Custom Curve") == true
         val currentWasInRowing = current.workoutMode?.startsWith("Rowing") == true
         val currentWasInPowerWorkout = current.workoutMode?.startsWith("Damper") == true ||
@@ -1088,7 +1088,7 @@ object VoltraNotificationParser {
             VoltraControlFrames.WORKOUT_STATE_DAMPER -> "Damper"
             VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE -> "Custom Curve"
             VoltraControlFrames.WORKOUT_STATE_ISOKINETIC -> "Isokinetic"
-            VoltraControlFrames.WORKOUT_STATE_ISOMETRIC -> "Isometric Test"
+            VoltraControlFrames.WORKOUT_STATE_ISOMETRIC -> "Isometric"
             else -> null
         }
         if (stateLabel != null) {

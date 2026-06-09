@@ -8,10 +8,18 @@ data class VoltraBootstrapPacket(
 }
 
 object VoltraOfficialReadOnlyBootstrap {
+    private const val APP_HELLO_NAME = "Open Source"
+
     val packets: List<VoltraBootstrapPacket> = listOf(
         VoltraBootstrapPacket(
-            label = "commonHandshake app hello",
-            hex = "552904c90110000020004f69506164000000000000000000000000000000000084ab1a5f292001ea4f",
+            label = "commonHandshake app hello ($APP_HELLO_NAME)",
+            hex = VoltraFrameBuilder.build(
+                cmd = VoltraControlFrames.CMD_READ_DEVICE_NAME,
+                payload = appHelloPayload(APP_HELLO_NAME),
+                sender = 0x01,
+                receiver = VoltraFrameBuilder.DEVICE_RECEIVER,
+                seq = 0x00,
+            ).toHexString(),
         ),
         VoltraBootstrapPacket(
             label = "commonConnectRequest",
@@ -90,4 +98,9 @@ object VoltraOfficialReadOnlyBootstrap {
             ).toHexString(),
         ),
     )
+
+    private fun appHelloPayload(name: String): ByteArray {
+        return VoltraControlFrames.setDeviceNamePayload(name) +
+            byteArrayOf(0x84.toByte(), 0xAB.toByte(), 0x1A, 0x5F, 0x29, 0x20, 0x01)
+    }
 }

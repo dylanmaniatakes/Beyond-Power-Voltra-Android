@@ -228,6 +228,14 @@ class HttpGatewayServer(
 
     private suspend fun route(request: HttpRequest): HttpResponse {
         val path = request.path.substringBefore('?')
+        if (request.method == "OPTIONS") {
+            return HttpResponse(
+                statusCode = 200,
+                body = buildJsonObject {
+                    put("ok", true)
+                },
+            )
+        }
         if (path == "/health") {
             return HttpResponse(
                 statusCode = 200,
@@ -282,8 +290,14 @@ class HttpGatewayServer(
             HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/resistance-band", "Switch the Voltra into Resistance Band."),
             HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/damper", "Switch the Voltra into Damper."),
             HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/isokinetic", "Switch the Voltra into Isokinetic."),
-            HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/isometric", "Switch the Voltra into Isometric Test."),
+            HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/isometric", "Switch the Voltra into Isometric."),
             HttpGatewayCommandDescriptor("POST", "/v1/commands/mode/rowing", "Switch the Voltra into Rowing."),
+            HttpGatewayCommandDescriptor(
+                "POST",
+                "/v1/commands/rowing/start",
+                "Start Rowing, optionally using the current preset distance.",
+                buildJsonObject { put("target_meters", 500) },
+            ),
             HttpGatewayCommandDescriptor(
                 "POST",
                 "/v1/commands/target-load",
@@ -706,6 +720,8 @@ class HttpGatewayServer(
             append("Content-Length: ${bodyBytes.size}\r\n")
             append("Connection: close\r\n")
             append("Access-Control-Allow-Origin: *\r\n")
+            append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+            append("Access-Control-Allow-Headers: X-Voltra-Key, Authorization, Content-Type\r\n")
             append("\r\n")
         }
         output.write(headers.toByteArray(UTF_8))

@@ -34,6 +34,8 @@ Send it in either of these ways:
 
 The app shows the current key and listening URLs in **More > HTTP Gateway**.
 
+Browser dashboards can call the gateway with `fetch`; CORS preflight is supported for `GET`, `POST`, and `OPTIONS` with `X-Voltra-Key`, `Authorization`, and `Content-Type`.
+
 ## Health Check
 
 No key required.
@@ -148,12 +150,44 @@ curl -X POST \
 
 `POST /v1/commands/mode/isometric`
 
+### Rowing
+
+`POST /v1/commands/mode/rowing`
+
 Example:
 
 ```bash
 curl -X POST \
   -H "X-Voltra-Key: YOUR_KEY" \
   http://PHONE_IP:8788/v1/commands/mode/isokinetic
+```
+
+## Rowing Commands
+
+### Start Rowing
+
+`POST /v1/commands/rowing/start`
+
+Body is optional. Omit `target_meters` for Just Row, or pass a supported distance preset.
+
+```json
+{ "target_meters": 500 }
+```
+
+### Rowing Resistance
+
+`POST /v1/commands/rowing/resistance-level`
+
+```json
+{ "level": 4 }
+```
+
+### Simulated Wear
+
+`POST /v1/commands/rowing/simulated-wear`
+
+```json
+{ "level": 8 }
 ```
 
 ## Weight Training Commands

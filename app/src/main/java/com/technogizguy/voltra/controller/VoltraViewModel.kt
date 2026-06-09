@@ -3,6 +3,7 @@ package com.technogizguy.voltra.controller
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import com.technogizguy.voltra.controller.http.HttpGatewayState
 import com.technogizguy.voltra.controller.mqtt.MqttPublisherState
 import androidx.lifecycle.AndroidViewModel
@@ -22,13 +23,19 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import kotlin.math.roundToInt
 
 enum class ControlModeUi {
@@ -39,6 +46,7 @@ enum class ControlModeUi {
     ISOMETRIC_TEST,
     CUSTOM_CURVE,
     ROWING,
+    SKI,
 }
 
 class VoltraViewModel(
@@ -82,11 +90,17 @@ class VoltraViewModel(
 
     private val mutableSelectedControlMode = MutableStateFlow(ControlModeUi.WEIGHT_TRAINING)
     val selectedControlMode: StateFlow<ControlModeUi> = mutableSelectedControlMode
+    private val mutableGitHubUpdateState = MutableStateFlow(GitHubUpdateState())
+    val githubUpdateState: StateFlow<GitHubUpdateState> = mutableGitHubUpdateState
     private var activeWorkoutDraft: ActiveWorkoutDraft? = null
+    private var lastRememberedReportedDeviceKey: String? = null
 
     init {
         viewModelScope.launch {
-            state.collect(::trackWorkoutHistory)
+            state.collect { session ->
+                trackWorkoutHistory(session)
+                rememberReportedDeviceName(session)
+            }
         }
     }
 
@@ -209,6 +223,7 @@ class VoltraViewModel(
         beginWorkoutSessionFor(ControlModeUi.RESISTANCE_BAND)
         viewModelScope.launch {
             client.enterResistanceBandMode()
+            refreshModeTargetLoadAfterEntry()
         }
     }
 
@@ -216,6 +231,7 @@ class VoltraViewModel(
         beginWorkoutSessionFor(ControlModeUi.DAMPER)
         viewModelScope.launch {
             client.enterDamperMode()
+            refreshModeTargetLoadAfterEntry()
         }
     }
 
@@ -223,6 +239,7 @@ class VoltraViewModel(
         beginWorkoutSessionFor(ControlModeUi.ISOKINETIC)
         viewModelScope.launch {
             client.enterIsokineticMode()
+            refreshModeTargetLoadAfterEntry()
         }
     }
 
@@ -230,6 +247,7 @@ class VoltraViewModel(
         beginWorkoutSessionFor(ControlModeUi.ISOMETRIC_TEST)
         viewModelScope.launch {
             client.enterIsometricMode()
+            refreshModeTargetLoadAfterEntry()
         }
     }
 
@@ -237,6 +255,7 @@ class VoltraViewModel(
         beginWorkoutSessionFor(ControlModeUi.CUSTOM_CURVE)
         viewModelScope.launch {
             client.enterCustomCurveMode()
+            refreshModeTargetLoadAfterEntry()
         }
     }
 
@@ -244,13 +263,26 @@ class VoltraViewModel(
         beginWorkoutSessionFor(ControlModeUi.ROWING)
         viewModelScope.launch {
             client.enterRowMode()
+            refreshModeTargetLoadAfterEntry()
         }
     }
 
+    fun enterSkiMode() {
+        beginWorkoutSessionFor(ControlModeUi.SKI)
+    }
+
     fun startRow(targetMeters: Int? = null) {
-        beginWorkoutSessionFor(ControlModeUi.ROWING)
+        val activeCardioMode = when (mutableSelectedControlMode.value) {
+            ControlModeUi.SKI -> ControlModeUi.SKI
+            else -> ControlModeUi.ROWING
+        }
+        if (activeCardioMode == ControlModeUi.SKI) {
+            return
+        }
+        beginWorkoutSessionFor(activeCardioMode)
         viewModelScope.launch {
             client.startRow(targetMeters)
+            refreshModeTargetLoadAfterEntry()
         }
     }
 
@@ -466,6 +498,20 @@ class VoltraViewModel(
         beginWorkoutSessionFor(ControlModeUi.WEIGHT_TRAINING)
         viewModelScope.launch {
             client.setStrengthMode()
+            refreshModeTargetLoadAfterEntry()
+        }
+    }
+
+    private suspend fun refreshModeTargetLoadAfterEntry() {
+        delay(350)
+        refreshModeFeatureStatusIfReady()
+        delay(900)
+        refreshModeFeatureStatusIfReady()
+    }
+
+    private suspend fun refreshModeFeatureStatusIfReady() {
+        if (state.value.connectionState == VoltraConnectionState.CONNECTED && state.value.controlCommandsEnabled) {
+            client.refreshModeFeatureStatus()
         }
     }
 
@@ -604,14 +650,65 @@ class VoltraViewModel(
         context.startActivity(Intent.createChooser(intent, "Share VOLTRA diagnostics"))
     }
 
+    fun checkGitHubUpdates() {
+        if (mutableGitHubUpdateState.value.checking) return
+        viewModelScope.launch {
+            val currentVersion = appVersion()
+            mutableGitHubUpdateState.value = GitHubUpdateState(
+                checking = true,
+                message = "Checking GitHub releases...",
+            )
+            runCatching { fetchLatestGitHubRelease() }
+                .onSuccess { release ->
+                    val updateAvailable = compareVersions(release.version, currentVersion) > 0
+                    mutableGitHubUpdateState.value = GitHubUpdateState(
+                        checking = false,
+                        latestVersion = release.version,
+                        latestTag = release.tag,
+                        releaseUrl = release.releaseUrl,
+                        apkDownloadUrl = release.apkDownloadUrl,
+                        updateAvailable = updateAvailable,
+                        checkedAtMillis = System.currentTimeMillis(),
+                        message = when {
+                            updateAvailable -> "Beta ${release.version} is available on GitHub."
+                            release.version != null -> "You are on the latest GitHub release."
+                            else -> "Latest release found, but its version label could not be parsed."
+                        },
+                    )
+                }
+                .onFailure { error ->
+                    mutableGitHubUpdateState.value = GitHubUpdateState(
+                        checking = false,
+                        checkedAtMillis = System.currentTimeMillis(),
+                        message = "Could not check GitHub releases.",
+                        error = error.message ?: error::class.java.simpleName,
+                    )
+                }
+        }
+    }
+
+    fun openGitHubRelease(context: Context, preferApk: Boolean = false) {
+        val updateState = mutableGitHubUpdateState.value
+        val targetUrl = when {
+            preferApk -> updateState.apkDownloadUrl ?: updateState.releaseUrl ?: GITHUB_RELEASES_URL
+            else -> updateState.releaseUrl ?: GITHUB_RELEASES_URL
+        }
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+    }
+
     fun diagnosticsText(): String {
         val current = state.value
+        val currentMqttState = mqttState.value
+        val currentHttpGatewayState = httpGatewayState.value
         val latestSessionFrames = current.rawFrames.filter { current.isLatestSessionTimestamp(it.timestampMillis) }
         val olderFrames = current.rawFrames.filterNot { current.isLatestSessionTimestamp(it.timestampMillis) }
         val latestSessionCommands = current.commandLog.filter { current.isLatestSessionTimestamp(it.timestampMillis) }
         val olderCommands = current.commandLog.filterNot { current.isLatestSessionTimestamp(it.timestampMillis) }
         return buildString {
             appendLine("Voltra Controller Diagnostics")
+            appendLine("App version: ${appVersion()}")
             appendLine("Connection: ${current.connectionState}")
             appendLine("Protocol: ${current.protocolStatus}")
             appendLine("Status: ${current.statusMessage}")
@@ -619,10 +716,27 @@ class VoltraViewModel(
             appendLine("Connected at millis: ${current.connectedAtMillis ?: "unknown"}")
             appendLine("Last disconnect millis: ${current.lastDisconnectAtMillis ?: "unknown"}")
             appendLine("Connection duration millis: ${current.lastConnectionDurationMillis ?: "unknown"}")
-            appendLine("Device: ${current.currentDevice?.name ?: "unknown"} ${current.currentDevice?.address.orEmpty()}")
+            appendLine("Device: ${current.reading.deviceName ?: current.currentDevice?.name ?: "unknown"} ${current.currentDevice?.address.orEmpty()}")
             appendLine("Subscribed characteristics: ${current.subscribedCharacteristicCount}")
             appendLine("Control commands enabled: ${current.controlCommandsEnabled}")
             appendLine("Target load: ${current.targetLoad.display()}")
+            appendLine("Max target load: ${current.safety.maxTargetLoadLb} lb")
+            appendLine("Latest session frames: ${latestSessionFrames.size}")
+            appendLine("Latest session commands: ${latestSessionCommands.size}")
+            appendLine()
+            appendLine("Integrations")
+            appendLine("MQTT: ${currentMqttState.connectionState}")
+            appendLine("MQTT endpoint: ${currentMqttState.brokerEndpoint ?: "unknown"}")
+            appendLine("MQTT topic prefix: ${currentMqttState.topicPrefix ?: "unknown"}")
+            appendLine("MQTT last error: ${currentMqttState.lastError ?: "none"}")
+            appendLine("MQTT last published millis: ${currentMqttState.lastPublishedMillis ?: "unknown"}")
+            appendLine("MQTT published topic count: ${currentMqttState.publishedTopicCount}")
+            appendLine("HTTP gateway: ${currentHttpGatewayState.connectionState}")
+            appendLine("HTTP port: ${currentHttpGatewayState.port}")
+            appendLine("HTTP URLs: ${currentHttpGatewayState.urls.joinToString().ifBlank { "unknown" }}")
+            appendLine("HTTP last error: ${currentHttpGatewayState.lastError ?: "none"}")
+            appendLine("HTTP request count: ${currentHttpGatewayState.requestCount}")
+            appendLine("HTTP last request millis: ${currentHttpGatewayState.lastRequestMillis ?: "unknown"}")
             appendLine()
             appendLine("Readings")
             appendReadingLines(current.reading)
@@ -655,6 +769,89 @@ class VoltraViewModel(
             appendLine("Earlier Command Log")
             appendCommandLines(olderCommands.takeLast(80))
         }
+    }
+
+    private fun appVersion(): String {
+        val app = getApplication<Application>()
+        return runCatching {
+            val packageInfo = app.packageManager.getPackageInfo(app.packageName, 0)
+            packageInfo.versionName ?: "unknown"
+        }.getOrDefault("unknown")
+    }
+
+    private suspend fun fetchLatestGitHubRelease(): GitHubReleaseInfo = withContext(Dispatchers.IO) {
+        val connection = (URL(GITHUB_RELEASES_LATEST_URL).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8_000
+            readTimeout = 8_000
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", "Voltra-Controller-Android")
+        }
+        try {
+            val responseCode = connection.responseCode
+            val body = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()
+                ?.use { it.readText() }
+                .orEmpty()
+            if (responseCode !in 200..299) {
+                error("GitHub returned HTTP $responseCode")
+            }
+            val json = JSONObject(body)
+            val tag = json.optString("tag_name").takeIf { it.isNotBlank() }
+            val name = json.optString("name").takeIf { it.isNotBlank() }
+            val releaseUrl = json.optString("html_url").takeIf { it.isNotBlank() } ?: GITHUB_RELEASES_URL
+            val assets = json.optJSONArray("assets")
+            var apkDownloadUrl: String? = null
+            if (assets != null) {
+                for (index in 0 until assets.length()) {
+                    val asset = assets.optJSONObject(index) ?: continue
+                    val assetName = asset.optString("name")
+                    val assetUrl = asset.optString("browser_download_url")
+                    if (assetName.endsWith(".apk", ignoreCase = true) && assetUrl.isNotBlank()) {
+                        apkDownloadUrl = assetUrl
+                        break
+                    }
+                }
+            }
+            GitHubReleaseInfo(
+                tag = tag,
+                version = parseVersionLabel(tag, name),
+                releaseUrl = releaseUrl,
+                apkDownloadUrl = apkDownloadUrl,
+            )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun parseVersionLabel(vararg labels: String?): String? {
+        labels.forEach { label ->
+            val match = VERSION_LABEL_REGEX.find(label.orEmpty())
+            if (match != null) {
+                return match.groupValues[1]
+            }
+        }
+        return null
+    }
+
+    private fun compareVersions(latest: String?, current: String): Int {
+        val latestParts = parseVersionParts(latest) ?: return 0
+        val currentParts = parseVersionParts(current) ?: return 0
+        val size = maxOf(latestParts.size, currentParts.size)
+        for (index in 0 until size) {
+            val left = latestParts.getOrElse(index) { 0 }
+            val right = currentParts.getOrElse(index) { 0 }
+            if (left != right) return left.compareTo(right)
+        }
+        return 0
+    }
+
+    private fun parseVersionParts(version: String?): List<Int>? {
+        val match = VERSION_LABEL_REGEX.find(version.orEmpty()) ?: return null
+        return match.groupValues[1]
+            .split(".")
+            .mapNotNull { it.toIntOrNull() }
+            .takeIf { it.isNotEmpty() }
     }
 
     private fun StringBuilder.appendReadingLines(reading: VoltraReading) {
@@ -782,6 +979,15 @@ class VoltraViewModel(
         }
     }
 
+    private suspend fun rememberReportedDeviceName(current: VoltraSessionState) {
+        val deviceId = current.currentDevice?.id ?: return
+        val reportedName = current.reading.deviceName?.trim()?.takeIf { it.isNotBlank() } ?: return
+        val key = "$deviceId|$reportedName"
+        if (key == lastRememberedReportedDeviceKey) return
+        preferencesRepository.rememberDevice(deviceId, reportedName)
+        lastRememberedReportedDeviceKey = key
+    }
+
     private fun beginWorkoutSessionFor(mode: ControlModeUi) {
         if (activeWorkoutDraft?.mode == mode) return
         finalizeActiveWorkoutIfNeeded(state.value)
@@ -791,7 +997,7 @@ class VoltraViewModel(
             startedAtMillis = System.currentTimeMillis(),
             mode = mode,
             modeLabel = mode.displayLabel(),
-            deviceName = current.currentDevice?.name ?: preferences.value.lastDeviceName,
+            deviceName = current.reading.deviceName ?: current.currentDevice?.name ?: preferences.value.lastDeviceName,
             primarySetting = primarySettingSummary(mode, current),
             batteryStartPercent = current.reading.batteryPercent,
         ).updatedWith(current)
@@ -805,7 +1011,7 @@ class VoltraViewModel(
             id = draft.id,
             startedAtMillis = draft.startedAtMillis,
             endedAtMillis = current.reading.lastUpdatedMillis ?: current.lastDisconnectAtMillis ?: System.currentTimeMillis(),
-            deviceName = current.currentDevice?.name ?: draft.deviceName,
+            deviceName = current.reading.deviceName ?: current.currentDevice?.name ?: draft.deviceName,
             modeLabel = draft.modeLabel,
             primarySetting = draft.primarySetting ?: primarySettingSummary(draft.mode, current),
             reps = draft.reps,
@@ -899,6 +1105,10 @@ class VoltraViewModel(
                 reading.rowingDistanceMeters?.let { add("${trimToLabel(it)} m") }
                 reading.rowingPace500Millis?.let { add("${formatPaceForHistory(it)} /500m") }
             }.joinToString(" | ").ifBlank { "Just Row" }
+            ControlModeUi.SKI -> buildList {
+                reading.rowingDistanceMeters?.let { add("${trimToLabel(it)} m") }
+                reading.rowingPace500Millis?.let { add("${formatPaceForHistory(it)} pace") }
+            }.joinToString(" | ").ifBlank { "Ski" }
         }
     }
 
@@ -940,9 +1150,10 @@ class VoltraViewModel(
         ControlModeUi.RESISTANCE_BAND -> "Resistance Band"
         ControlModeUi.DAMPER -> "Damper"
         ControlModeUi.ISOKINETIC -> "Isokinetic"
-        ControlModeUi.ISOMETRIC_TEST -> "Isometric Test"
+        ControlModeUi.ISOMETRIC_TEST -> "Isometric"
         ControlModeUi.CUSTOM_CURVE -> "Custom Curve"
         ControlModeUi.ROWING -> "Rowing"
+        ControlModeUi.SKI -> "Ski"
     }
 
     private data class ActiveWorkoutDraft(
@@ -969,7 +1180,7 @@ class VoltraViewModel(
         fun updatedWith(current: VoltraSessionState): ActiveWorkoutDraft {
             val reading = current.reading
             return copy(
-                deviceName = current.currentDevice?.name ?: deviceName,
+                deviceName = reading.deviceName ?: current.currentDevice?.name ?: deviceName,
                 primarySetting = primarySetting ?: current.reading.workoutMode,
                 batteryEndPercent = reading.batteryPercent ?: batteryEndPercent,
                 reps = maxOf(reps, reading.repCount ?: 0),
@@ -1020,3 +1231,16 @@ private fun VoltraSessionState.isLatestSessionTimestamp(timestampMillis: Long): 
     val end = lastDisconnectAtMillis
     return timestampMillis >= start && (end == null || timestampMillis <= end)
 }
+
+private data class GitHubReleaseInfo(
+    val tag: String?,
+    val version: String?,
+    val releaseUrl: String,
+    val apkDownloadUrl: String?,
+)
+
+private const val GITHUB_RELEASES_URL =
+    "https://github.com/dylanmaniatakes/Beyond-Power-Voltra-Android/releases"
+private const val GITHUB_RELEASES_LATEST_URL =
+    "https://api.github.com/repos/dylanmaniatakes/Beyond-Power-Voltra-Android/releases/latest"
+private val VERSION_LABEL_REGEX = Regex("""(?i)(\d+(?:\.\d+){0,2})""")

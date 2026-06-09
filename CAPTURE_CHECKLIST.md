@@ -4,6 +4,8 @@ This is the running list of high-value captures for filling in the local Android
 
 For every capture, record the exact steps in a small text note, keep the VOLTRA close to the iPad/phone, and export Android diagnostics immediately after the run. If using the official iPad app, grab the sysdiagnose within a minute or two of the action.
 
+When reporting an issue or beta finding, include the app version, Android device/OS, visible VOLTRA firmware if available, exact mode and settings, expected result, actual result, exported diagnostics, and `/v1/state` or MQTT snapshots if integrations were involved.
+
 ## Highest Priority
 
 1. Rep counter validation
@@ -109,6 +111,9 @@ Custom Curve
 
 16. Rowing
     - Enter rowing mode, change damper/drag settings, start/finish a short row.
+    - Status: the stock Android bundle exposes `setCardioActivityModeForDevice` and `cardioActivityModeIndex`, but the numeric Row/Ski selector frame has not been recovered from the Hermes bundle yet.
+    - Still needed: in the stock app Cardio menu, switch Row -> Ski -> Row before pressing Start, then export diagnostics so Android can compare selector writes around `EP_SCR_SWITCH`, cardio activity mode/index, and any unknown single-parameter writes.
+    - Android should keep Ski start capture-only until this selector write is observed; do not reuse Row start as a Ski command.
     - Skip PM5 pairing unless intentionally testing PM5 later.
 
 17. Sled Pull beta
@@ -141,3 +146,10 @@ Custom Curve
     - Complete at least three sets with visible set numbers noted after each set.
     - Export immediately after the third set.
     - This is specifically to validate telemetry byte 3 as the device/iPad set counter.
+
+23. User/profile slots beta
+    - Status: the 2026-06-08 Android bundle contains user-slot protocol names including `fetch-current-user-slot`, `fetch-user-slot-detail`, `switch-current-user-slot`, `createDeleteUserSlotCommand`, and `parseSwitchUserThroughIdPayload`.
+    - Status: the Hermes bundle exposes names and response errors, but the current extraction did not expose safe frame IDs/bytes for list, read, switch, create, or delete.
+    - Connect cold with the stock app, open the user/profile switcher, list users, switch to another user if safe, then export diagnostics immediately.
+    - Capture create/delete only if the stock app makes the action reversible and it is safe for the VOLTRA owner.
+    - Keep Android profile switching capture-only until the exact request and response traffic is observed.

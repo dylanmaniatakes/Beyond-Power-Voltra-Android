@@ -583,9 +583,9 @@ class AndroidVoltraClient(
         val currentGatt = gatt
         return when {
             !current.controlCommandsEnabled ->
-                blocked(VoltraControlCommand.ENTER_ISOMETRIC_MODE, "Isometric Test is locked until this session receives a valid VOLTRA notification frame.")
+                blocked(VoltraControlCommand.ENTER_ISOMETRIC_MODE, "Isometric is locked until this session receives a valid VOLTRA notification frame.")
             current.connectionState != VoltraConnectionState.CONNECTED ->
-                blocked(VoltraControlCommand.ENTER_ISOMETRIC_MODE, "Cannot enter Isometric Test while the VOLTRA is not connected.")
+                blocked(VoltraControlCommand.ENTER_ISOMETRIC_MODE, "Cannot enter Isometric while the VOLTRA is not connected.")
             currentGatt == null ->
                 blocked(VoltraControlCommand.ENTER_ISOMETRIC_MODE, "No active GATT connection.")
             hasPendingCommand(VoltraControlCommand.ENTER_ISOMETRIC_MODE) ->
@@ -593,18 +593,19 @@ class AndroidVoltraClient(
                     VoltraCommandResult(
                         command = VoltraControlCommand.ENTER_ISOMETRIC_MODE,
                         status = VoltraCommandStatus.QUEUED,
-                        message = "Isometric Test entry is already queued.",
+                        message = "Isometric entry is already queued.",
                         timestampMillis = System.currentTimeMillis(),
                     ),
                 )
             else -> {
                 cancelPendingRowStartReasserts()
                 cancelIsometricVendorRefreshBurst()
+                pendingIsometricAutoLoad = false
                 stopPendingIsometricAutoLoadLoop(resetLoadIssued = true)
                 mutableState.update {
                     it.copy(
                         reading = it.reading.clearIsometricTestState().clearRowingState().copy(
-                            workoutMode = "Isometric Test, Ready",
+                            workoutMode = "Isometric, Ready",
                         ),
                         safety = it.safety.copy(
                             canLoad = true,
@@ -620,9 +621,10 @@ class AndroidVoltraClient(
                     gatt = currentGatt,
                     command = VoltraControlCommand.ENTER_ISOMETRIC_MODE,
                     frames = buildList {
+                        addStandardWorkoutTelemetryRestoreFrames()
                         add(
                             QueuedFrameSpec(
-                                label = "enter Isometric Test (FITNESS_WORKOUT_STATE=8)",
+                                label = "enter Isometric (FITNESS_WORKOUT_STATE=8)",
                                 bytes = VoltraFrameBuilder.build(
                                     cmd = VoltraControlFrames.CMD_PARAM_WRITE,
                                     payload = VoltraControlFrames.enterIsometricPayload(),
@@ -630,16 +632,14 @@ class AndroidVoltraClient(
                                 ),
                             ),
                         )
+                        addReadModeFeatureStateFrame("read Isometric mode feature state")
                     },
-                    label = "enter Isometric Test (FITNESS_WORKOUT_STATE=8)",
+                    label = "enter Isometric (FITNESS_WORKOUT_STATE=8)",
                 )
-                pendingIsometricAutoLoad = true
                 if (result.status != VoltraCommandStatus.BLOCKED && result.status != VoltraCommandStatus.FAILED) {
                     lastIsometricEnterAtMillis = System.currentTimeMillis()
                     pendingIsometricLoadIssued = false
-                    schedulePendingIsometricAutoLoad(currentGatt)
                 } else {
-                    pendingIsometricAutoLoad = false
                     lastIsometricEnterAtMillis = 0L
                 }
                 result
@@ -2189,7 +2189,7 @@ class AndroidVoltraClient(
         mutableState.update {
             it.copy(
                 reading = it.reading.clearIsometricTestState().copy(
-                    workoutMode = it.reading.workoutMode ?: "Isometric Test, Ready",
+                    workoutMode = it.reading.workoutMode ?: "Isometric, Ready",
                 ),
             )
         }
@@ -2209,7 +2209,7 @@ class AndroidVoltraClient(
                 )
                 add(
                     QueuedFrameSpec(
-                        label = "arm Isometric Test (BP_SET_FITNESS_MODE=1)",
+                        label = "arm Isometric (BP_SET_FITNESS_MODE=1)",
                         bytes = VoltraFrameBuilder.build(
                             cmd = VoltraControlFrames.CMD_PARAM_WRITE,
                             payload = VoltraControlFrames.loadIsometricPayload(),
@@ -2228,7 +2228,7 @@ class AndroidVoltraClient(
                     ),
                 )
             },
-            label = "arm Isometric Test (BP_SET_FITNESS_MODE=1)",
+            label = "arm Isometric (BP_SET_FITNESS_MODE=1)",
         )
         pendingIsometricLoadIssued =
             result.status != VoltraCommandStatus.BLOCKED && result.status != VoltraCommandStatus.FAILED
@@ -2293,7 +2293,7 @@ class AndroidVoltraClient(
                         VoltraCommandResult(
                             command = VoltraControlCommand.LOAD,
                             status = VoltraCommandStatus.QUEUED,
-                            message = "Waiting for Isometric Test to settle before loading.",
+                            message = "Waiting for Isometric to settle before loading.",
                             timestampMillis = now,
                         ),
                     )
@@ -2318,7 +2318,7 @@ class AndroidVoltraClient(
                 mutableState.update {
                     it.copy(
                         reading = it.reading.clearIsometricTestState().copy(
-                            workoutMode = it.reading.workoutMode ?: "Isometric Test, Ready",
+                            workoutMode = it.reading.workoutMode ?: "Isometric, Ready",
                         ),
                     )
                 }
@@ -2536,11 +2536,11 @@ class AndroidVoltraClient(
                     }
                 } else if (
                     current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ||
-                    current.reading.workoutMode?.startsWith("Isometric Test") == true
+                    current.reading.workoutMode?.startsWith("Isometric") == true
                 ) {
                     mutableState.update {
                         it.copy(
-                            reading = it.reading.copy(workoutMode = "Isometric Test, Ready"),
+                            reading = it.reading.copy(workoutMode = "Isometric, Ready"),
                             safety = it.safety.copy(
                                 canLoad = true,
                                 reasons = listOf("Ready for current mode load."),
@@ -2739,7 +2739,7 @@ class AndroidVoltraClient(
                 if (
                     current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC ||
                     current.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING ||
-                    current.reading.workoutMode?.startsWith("Isometric Test") == true ||
+                    current.reading.workoutMode?.startsWith("Isometric") == true ||
                     current.reading.workoutMode?.startsWith("Rowing") == true
                 ) {
                     if (

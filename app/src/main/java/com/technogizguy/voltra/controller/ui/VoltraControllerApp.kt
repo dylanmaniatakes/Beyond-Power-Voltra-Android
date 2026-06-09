@@ -3,6 +3,7 @@ package com.technogizguy.voltra.controller.ui
 import android.graphics.Bitmap
 import android.util.Log
 import android.widget.NumberPicker
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -97,8 +98,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -117,6 +120,7 @@ import com.technogizguy.voltra.controller.R
 import com.technogizguy.voltra.controller.AccentColor
 import com.technogizguy.voltra.controller.ControlModeUi
 import com.technogizguy.voltra.controller.CustomCurvePreset
+import com.technogizguy.voltra.controller.GitHubUpdateState
 import com.technogizguy.voltra.controller.HttpGatewayPreferences
 import com.technogizguy.voltra.controller.IsometricForceSample
 import com.technogizguy.voltra.controller.LocalPreferences
@@ -268,6 +272,12 @@ private fun controlAccentFor(mode: ControlModeUi): ControlAccentPalette = when (
         onAccent = Color(0xFF002432),
         accentContainer = Color(0xFF123E4E),
         onAccentContainer = Color(0xFFBFEFFF),
+    )
+    ControlModeUi.SKI -> ControlAccentPalette(
+        accent = Color(0xFF5FDDE8),
+        onAccent = Color(0xFF002123),
+        accentContainer = Color(0xFF0F444A),
+        onAccentContainer = Color(0xFFC6F6FA),
     )
 }
 
@@ -488,6 +498,7 @@ private data class AdaptiveLayoutInfo(
     val isTablet: Boolean,
     val isLandscape: Boolean,
     val useWidePanels: Boolean,
+    val isCompactHeight: Boolean,
 )
 
 @Composable
@@ -499,10 +510,12 @@ private fun AdaptiveScreenScaffold(
         val isTablet = maxWidth >= 840.dp
         val isLandscape = maxWidth > maxHeight
         val useWidePanels = maxWidth >= 900.dp && isLandscape
+        val isCompactHeight = maxHeight < 720.dp
         val layout = AdaptiveLayoutInfo(
             isTablet = isTablet,
             isLandscape = isLandscape,
             useWidePanels = useWidePanels,
+            isCompactHeight = isCompactHeight,
         )
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -544,10 +557,12 @@ fun VoltraControllerApp(
     val weightPresets by viewModel.weightPresets.collectAsStateWithLifecycle()
     val customCurvePresets by viewModel.customCurvePresets.collectAsStateWithLifecycle()
     val workoutHistory by viewModel.workoutHistory.collectAsStateWithLifecycle()
+    val githubUpdateState by viewModel.githubUpdateState.collectAsStateWithLifecycle()
     val showAllDevices by viewModel.showAllDevices.collectAsStateWithLifecycle()
     val selectedControlMode by viewModel.selectedControlMode.collectAsStateWithLifecycle()
     val navController = rememberNavController()
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
     val currentRoute = currentDestination?.route
@@ -723,6 +738,7 @@ fun VoltraControllerApp(
                         weightPresets = weightPresets,
                         customCurvePresets = customCurvePresets,
                         selectedMode = selectedControlMode,
+                        onSelectMode = viewModel::selectControlMode,
                         onEnterWeightTraining = viewModel::setStrengthMode,
                         onEnterDamper = viewModel::enterDamperMode,
                         onEnterIsokinetic = viewModel::enterIsokineticMode,
@@ -782,6 +798,11 @@ fun VoltraControllerApp(
                         onEnableNotifications = viewModel::enableCandidateNotifications,
                         onReadVoltraCharacteristics = viewModel::readVoltraCharacteristics,
                         onReadOnlyHandshakeProbe = viewModel::runReadOnlyHandshakeProbe,
+                        onCopyDiagnostics = {
+                            clipboardManager.setText(AnnotatedString(viewModel.diagnosticsText()))
+                            Toast.makeText(context, "Diagnostics copied.", Toast.LENGTH_SHORT).show()
+                        },
+                        onShareDiagnostics = { viewModel.shareDiagnostics(context) },
                     )
                 }
                 composable(Route.MORE.path) {
@@ -790,6 +811,7 @@ fun VoltraControllerApp(
                         preferences = preferences,
                         weightPresets = weightPresets,
                         workoutHistory = workoutHistory,
+                        githubUpdateState = githubUpdateState,
                         mqttState = mqttState,
                         httpGatewayState = httpGatewayState,
                         onSetAccentColor = viewModel::setAccentColor,
@@ -806,10 +828,17 @@ fun VoltraControllerApp(
                         onDeleteWeightPreset = viewModel::deleteWeightPreset,
                         onShareWorkoutHistory = { viewModel.shareWorkoutHistoryCsv(context) },
                         onClearWorkoutHistory = viewModel::clearWorkoutHistory,
+                        onCheckGitHubUpdates = viewModel::checkGitHubUpdates,
+                        onOpenGitHubRelease = { viewModel.openGitHubRelease(context, preferApk = false) },
+                        onOpenGitHubApk = { viewModel.openGitHubRelease(context, preferApk = true) },
                         onOpenLogs = {
                             navController.navigate(Route.DIAGNOSTICS.path) {
                                 launchSingleTop = true
                             }
+                        },
+                        onCopyDiagnostics = {
+                            clipboardManager.setText(AnnotatedString(viewModel.diagnosticsText()))
+                            Toast.makeText(context, "Diagnostics copied.", Toast.LENGTH_SHORT).show()
                         },
                         onShareDiagnostics = { viewModel.shareDiagnostics(context) },
                     )
@@ -876,6 +905,7 @@ private fun ConnectScreen(
                 }
                 OutlinedButton(
                     onClick = onStopScan,
+                    enabled = state.connectionState == VoltraConnectionState.SCANNING,
                     modifier = Modifier.weight(1f),
                 ) {
                     Text("Stop")
@@ -913,7 +943,13 @@ private fun ConnectScreen(
         }
         if (scanResults.isEmpty()) {
             item {
-                EmptyState("No devices found yet.")
+                val emptyText = when {
+                    !permissionState.requiredGranted -> "Bluetooth permissions are needed before scanning."
+                    state.connectionState == VoltraConnectionState.SCANNING -> "Scanning for nearby VOLTRA devices..."
+                    !showAllDevices -> "No VOLTRA candidates yet. Turn on diagnostic BLE devices if the unit is awake but missing."
+                    else -> "No BLE devices found yet. Keep the VOLTRA awake and close, then scan again."
+                }
+                EmptyState(emptyText)
             }
         } else {
             items(scanResults, key = { it.device.id }) { result ->
@@ -938,6 +974,11 @@ private fun HomeScreen(
 ) {
     AdaptiveScreenScaffold { layout ->
         val sectionSpacing = if (layout.isTablet) 14.dp else 12.dp
+        val modeDisabledDetail = when {
+            state.connectionState == VoltraConnectionState.CONNECTED -> "Validating link"
+            state.connectionState.hasActiveGattSession() -> state.connectionState.displayText()
+            else -> "Connect first"
+        }
         if (layout.useWidePanels) {
             Row(
                 modifier = Modifier
@@ -965,6 +1006,7 @@ private fun HomeScreen(
                 ) {
                     ModeGrid(
                         controlReady = state.controlCommandsEnabled,
+                        disabledDetail = modeDisabledDetail,
                         isWideLayout = true,
                         onWeightTraining = onWeightTraining,
                         onResistanceBand = onResistanceBand,
@@ -997,6 +1039,7 @@ private fun HomeScreen(
                 item {
                     ModeGrid(
                         controlReady = state.controlCommandsEnabled,
+                        disabledDetail = modeDisabledDetail,
                         isWideLayout = layout.isTablet,
                         onWeightTraining = onWeightTraining,
                         onResistanceBand = onResistanceBand,
@@ -1019,6 +1062,7 @@ private fun ControlScreen(
     weightPresets: List<WeightPreset>,
     customCurvePresets: List<CustomCurvePreset>,
     selectedMode: ControlModeUi,
+    onSelectMode: (ControlModeUi) -> Unit,
     onEnterWeightTraining: () -> Unit,
     onEnterDamper: () -> Unit,
     onEnterIsokinetic: () -> Unit,
@@ -1067,12 +1111,14 @@ private fun ControlScreen(
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_RESISTANCE_BAND -> ControlModeUi.RESISTANCE_BAND
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_DAMPER -> ControlModeUi.DAMPER
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE -> ControlModeUi.CUSTOM_CURVE
+        state.reading.workoutMode?.startsWith("Ski") == true -> ControlModeUi.SKI
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING -> ControlModeUi.ROWING
         inIsokineticFamily -> ControlModeUi.ISOKINETIC
         state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ISOMETRIC -> ControlModeUi.ISOMETRIC_TEST
         else -> ControlModeUi.WEIGHT_TRAINING
     }
     val activeProfile = when {
+        selectedMode == ControlModeUi.SKI && reportedProfile == ControlModeUi.ROWING -> reportedProfile
         selectedMode != ControlModeUi.WEIGHT_TRAINING && selectedMode != reportedProfile -> selectedMode
         else -> reportedProfile
     }
@@ -1097,21 +1143,28 @@ private fun ControlScreen(
         ControlModeUi.ROWING ->
             state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_ROWING ||
                 state.reading.workoutMode?.startsWith("Rowing") == true
+        ControlModeUi.SKI ->
+            state.reading.workoutMode?.startsWith("Ski") == true
     }
     val modeTitle = when (activeProfile) {
         ControlModeUi.WEIGHT_TRAINING -> "Weight Training"
         ControlModeUi.RESISTANCE_BAND -> "Resistance Band"
         ControlModeUi.DAMPER -> "Damper"
         ControlModeUi.ISOKINETIC -> "Isokinetic"
-        ControlModeUi.ISOMETRIC_TEST -> "Isometric Test"
+        ControlModeUi.ISOMETRIC_TEST -> "Isometric"
         ControlModeUi.CUSTOM_CURVE -> "Custom Curve"
         ControlModeUi.ROWING -> "Rowing"
+        ControlModeUi.SKI -> "Ski"
     }
     val activeProfileStatus = when {
         state.connectionState != VoltraConnectionState.CONNECTED ->
             "Connect to a VOLTRA to use $modeTitle."
         !state.controlCommandsEnabled ->
             "Validating VOLTRA control link..."
+        activeProfile == ControlModeUi.SKI && state.reading.workoutMode?.startsWith("Ski") == true ->
+            state.reading.workoutMode ?: "Ski is starting."
+        activeProfile == ControlModeUi.SKI ->
+            "Ski selector capture needed before Android can start it safely."
         activeProfile == ControlModeUi.ROWING && state.reading.workoutMode?.startsWith("Rowing") == true ->
             state.reading.workoutMode ?: "Rowing is starting."
         activeProfile == ControlModeUi.ROWING && modeSessionMatched ->
@@ -1194,6 +1247,7 @@ private fun ControlScreen(
     val isLoaded = when (activeProfile) {
         ControlModeUi.ISOMETRIC_TEST -> optimisticIsometricLoaded ?: observedIsLoaded
         ControlModeUi.ROWING -> observedRowingLoaded
+        ControlModeUi.SKI -> observedRowingLoaded && state.reading.workoutMode?.startsWith("Ski") == true
         else -> observedIsLoaded
     }
     val canLoadShared = state.controlCommandsEnabled &&
@@ -1217,6 +1271,9 @@ private fun ControlScreen(
             canLoadShared &&
                 state.safety.workoutState == VoltraControlFrames.WORKOUT_STATE_CUSTOM_CURVE
         ControlModeUi.ROWING ->
+            state.controlCommandsEnabled &&
+                state.connectionState == VoltraConnectionState.CONNECTED
+        ControlModeUi.SKI ->
             state.controlCommandsEnabled &&
                 state.connectionState == VoltraConnectionState.CONNECTED
     }
@@ -1639,7 +1696,6 @@ private fun ControlScreen(
             !isometricLaunchRequested
         ) {
             isometricLaunchRequested = true
-            pendingIsometricLoad = true
             onEnterIsometric()
         } else if (
             selectedMode != ControlModeUi.ISOMETRIC_TEST ||
@@ -1810,6 +1866,7 @@ private fun ControlScreen(
                         }
                     },
                     onLoad = onLoad,
+                    onDirectLoad = onDirectLoad,
                     onUnload = onUnload,
                     onTriggerCableLength = onTriggerCableLength,
                     cableLengthEnabled = state.controlCommandsEnabled && sessionActive,
@@ -1841,6 +1898,7 @@ private fun ControlScreen(
                         }
                     },
                     onLoad = onLoad,
+                    onDirectLoad = onDirectLoad,
                     onUnload = onUnload,
                     onTriggerCableLength = onTriggerCableLength,
                     cableLengthEnabled = state.controlCommandsEnabled && sessionActive,
@@ -1857,6 +1915,8 @@ private fun ControlScreen(
                     waveformSamplesN = state.reading.isometricWaveformSamplesN,
                     maxForceLb = state.reading.isometricMaxForceLb,
                     maxDurationSeconds = state.reading.isometricMaxDurationSeconds,
+                    metricsType = state.reading.isometricMetricsType,
+                    bodyWeightLb = state.reading.isometricBodyWeightLb,
                     isLoaded = isLoaded,
                     controlReady = state.controlCommandsEnabled &&
                         state.connectionState == VoltraConnectionState.CONNECTED,
@@ -1868,8 +1928,10 @@ private fun ControlScreen(
                     reps = state.reading.repCount,
                     phase = state.reading.repPhase,
                     wideLayout = wideLayout,
+                    cableLengthEnabled = state.controlCommandsEnabled && sessionActive,
                     onLoad = onIsometricLoad,
                     onUnload = onIsometricUnload,
+                    onTriggerCableLength = onTriggerCableLength,
                     onExitWorkout = onIsometricExitWorkout,
                 )
             ControlModeUi.CUSTOM_CURVE ->
@@ -1889,8 +1951,11 @@ private fun ControlScreen(
                     onUnload = onUnload,
                     onExitWorkout = onExitWorkout,
                 )
-            ControlModeUi.ROWING ->
+            ControlModeUi.ROWING,
+            ControlModeUi.SKI ->
                 RowingModeCard(
+                    modeTitle = modeTitle,
+                    selectedCardioMode = activeProfile,
                     status = activeProfileStatus,
                     distanceMeters = state.reading.rowingDistanceMeters,
                     elapsedMillis = state.reading.rowingElapsedMillis,
@@ -1907,6 +1972,12 @@ private fun ControlScreen(
                     isLoaded = isLoaded,
                     controlReady = state.controlCommandsEnabled && state.connectionState == VoltraConnectionState.CONNECTED,
                     canLoad = canLoadActiveProfile,
+                    onSelectRowing = {
+                        onSelectMode(ControlModeUi.ROWING)
+                    },
+                    onSelectSki = {
+                        onSelectMode(ControlModeUi.SKI)
+                    },
                     onResistanceLevelChange = {
                         val snapped = it.roundToInt().coerceIn(
                             VoltraControlFrames.MIN_ROWING_SELECTOR_LEVEL,
@@ -1936,10 +2007,15 @@ private fun ControlScreen(
 
     CompositionLocalProvider(LocalControlAccent provides controlAccent) {
         AdaptiveScreenScaffold(maxContentWidth = 1320.dp) { layout ->
+            val compactVertical = layout.isCompactHeight
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = screenPadding(),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = if (compactVertical) {
+                    screenPadding(top = 8.dp, bottom = 8.dp)
+                } else {
+                    screenPadding()
+                },
+                verticalArrangement = Arrangement.spacedBy(if (compactVertical) 8.dp else 14.dp),
             ) {
                 item { mainControlCard(layout.useWidePanels) }
             }
@@ -2067,6 +2143,7 @@ private fun MoreFeaturesScreen(
     preferences: LocalPreferences,
     weightPresets: List<WeightPreset>,
     workoutHistory: List<WorkoutHistoryEntry>,
+    githubUpdateState: GitHubUpdateState,
     mqttState: MqttPublisherState,
     httpGatewayState: HttpGatewayState,
     onSetAccentColor: (AccentColor) -> Unit,
@@ -2083,7 +2160,11 @@ private fun MoreFeaturesScreen(
     onDeleteWeightPreset: (String) -> Unit,
     onShareWorkoutHistory: () -> Unit,
     onClearWorkoutHistory: () -> Unit,
+    onCheckGitHubUpdates: () -> Unit,
+    onOpenGitHubRelease: () -> Unit,
+    onOpenGitHubApk: () -> Unit,
     onOpenLogs: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
     onShareDiagnostics: () -> Unit,
 ) {
     AdaptiveScreenScaffold { layout ->
@@ -2111,6 +2192,7 @@ private fun MoreFeaturesScreen(
             )
             DiagnosticsToolsCard(
                 onOpenLogs = onOpenLogs,
+                onCopyDiagnostics = onCopyDiagnostics,
                 onShareDiagnostics = onShareDiagnostics,
             )
         }
@@ -2145,6 +2227,12 @@ private fun MoreFeaturesScreen(
                         onSetDeveloperModeEnabled(true)
                     }
                 },
+            )
+            GitHubUpdateCard(
+                updateState = githubUpdateState,
+                onCheckUpdates = onCheckGitHubUpdates,
+                onOpenRelease = onOpenGitHubRelease,
+                onOpenApk = onOpenGitHubApk,
             )
         }
 
@@ -2201,6 +2289,15 @@ private fun PlatformStatusCard(
     val protocolReady = state.protocolStatus == VoltraProtocolStatus.COMMAND_PROTOCOL_VALIDATED
     val streaming = state.reading.lastUpdatedMillis != null
     val transferReady = isConnected && state.controlCommandsEnabled
+    val reportedDeviceName = state.reading.deviceName ?: state.currentDevice?.name
+    val maxLoadLabel = buildString {
+        append("${state.safety.maxTargetLoadLb.roundToInt()} lb")
+        if (state.safety.supportsOverdrive250Lb) append(" Overdrive")
+    }
+    val screenState = VoltraControlFrames.screenStateLabel(
+        state.reading.appCurrentScreenId,
+        state.reading.fitnessOngoingUi,
+    )
     val mqttLabel = when (mqttState.connectionState) {
         MqttPublisherConnectionState.CONNECTED -> "Connected"
         MqttPublisherConnectionState.CONNECTING -> "Connecting"
@@ -2223,6 +2320,9 @@ private fun PlatformStatusCard(
         )
         DetailRow("Control link", if (protocolReady) "Validated" else state.protocolStatus.displayText())
         DetailRow("Live measurements", if (streaming) "Streaming" else if (isConnected) "Waiting" else "Connect first")
+        DetailRow("Device", reportedDeviceName ?: "Unknown")
+        DetailRow("Max target", maxLoadLabel)
+        screenState?.let { DetailRow("Screen state", it) }
         DetailRow("Data transfer", if (transferReady) "Name and startup image ready" else "Connect first")
         DetailRow("History", "$historyCount saved sessions")
         DetailRow("CSV export", if (historyCount > 0) "Ready" else "Ready after first workout")
@@ -2240,7 +2340,7 @@ private fun DevicePersonalizationCard(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val isConnected = state.connectionState == VoltraConnectionState.CONNECTED
-    val currentDeviceName = state.currentDevice?.name.orEmpty()
+    val currentDeviceName = (state.reading.deviceName ?: state.currentDevice?.name).orEmpty()
     var deviceName by remember(currentDeviceName) { mutableStateOf(currentDeviceName) }
     var localMessage by remember { mutableStateOf<String?>(null) }
     var startupImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -3149,6 +3249,7 @@ private fun workoutHistoryMetricsSummary(entry: WorkoutHistoryEntry): String? {
 @Composable
 private fun DiagnosticsToolsCard(
     onOpenLogs: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
     onShareDiagnostics: () -> Unit,
 ) {
     MetricCard {
@@ -3166,13 +3267,19 @@ private fun DiagnosticsToolsCard(
                 onClick = onOpenLogs,
                 modifier = Modifier.weight(1f),
             ) {
-                Text("Open Logs")
+                Text("Open")
+            }
+            OutlinedButton(
+                onClick = onCopyDiagnostics,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Copy")
             }
             OutlinedButton(
                 onClick = onShareDiagnostics,
                 modifier = Modifier.weight(1f),
             ) {
-                Text("Share Logs")
+                Text("Share")
             }
         }
     }
@@ -3203,11 +3310,75 @@ private fun VersionCard(
 }
 
 @Composable
+private fun GitHubUpdateCard(
+    updateState: GitHubUpdateState,
+    onCheckUpdates: () -> Unit,
+    onOpenRelease: () -> Unit,
+    onOpenApk: () -> Unit,
+) {
+    val checkedAt = updateState.checkedAtMillis?.let { millis ->
+        SimpleDateFormat("MMM d, h:mm a", Locale.US).format(Date(millis))
+    }
+    MetricCard {
+        Text("GitHub Updates", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(
+            updateState.error ?: updateState.message,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (updateState.error == null) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+        )
+        updateState.latestTag?.let { DetailRow("Latest release", it) }
+        updateState.latestVersion?.let { DetailRow("Latest version", it) }
+        checkedAt?.let { DetailRow("Checked", it) }
+        if (updateState.updateAvailable) {
+            AssistChip(
+                onClick = onOpenRelease,
+                label = { Text("Update Available") },
+                colors = AssistChipDefaults.assistChipColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    labelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = onCheckUpdates,
+                enabled = !updateState.checking,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (updateState.checking) "Checking" else "Check")
+            }
+            OutlinedButton(
+                onClick = onOpenRelease,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("GitHub")
+            }
+            OutlinedButton(
+                onClick = onOpenApk,
+                enabled = updateState.apkDownloadUrl != null,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("APK")
+            }
+        }
+    }
+}
+
+@Composable
 private fun DiagnosticsScreen(
     state: VoltraSessionState,
     onEnableNotifications: () -> Unit,
     onReadVoltraCharacteristics: () -> Unit,
     onReadOnlyHandshakeProbe: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
+    onShareDiagnostics: () -> Unit,
 ) {
     val latestSessionFrames = state.rawFrames
         .filter { state.isLatestSessionTimestamp(it.timestampMillis) }
@@ -3236,6 +3407,62 @@ private fun DiagnosticsScreen(
                 title = "Logs",
                 subtitle = "Session details recorded automatically while you connect and train.",
             )
+        }
+        item {
+            MetricCard {
+                Text("Support Packet", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    "${latestSessionFrames.size} latest-session frames, ${latestSessionCommands.size} command entries.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onCopyDiagnostics,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Copy")
+                    }
+                    OutlinedButton(
+                        onClick = onShareDiagnostics,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Share")
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                Text(
+                    "Safe read refresh",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onEnableNotifications,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Notify")
+                    }
+                    OutlinedButton(
+                        onClick = onReadVoltraCharacteristics,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("GATT")
+                    }
+                    OutlinedButton(
+                        onClick = onReadOnlyHandshakeProbe,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Probe")
+                    }
+                }
+            }
         }
         item {
             ConnectionTraceCard(state)
@@ -3293,6 +3520,15 @@ private fun DeviceStatusCard(
     state: VoltraSessionState,
     onDisconnect: () -> Unit,
 ) {
+    val displayName = state.reading.deviceName ?: state.currentDevice?.name ?: "No VOLTRA Connected"
+    val protocolText = when {
+        state.protocolStatus == VoltraProtocolStatus.COMMAND_PROTOCOL_VALIDATED -> "Controls validated"
+        state.connectionState == VoltraConnectionState.CONNECTED -> state.protocolStatus.displayText()
+        state.lastDisconnectReason != null &&
+            (state.connectionState == VoltraConnectionState.DISCONNECTED || state.connectionState == VoltraConnectionState.FAILED) ->
+            state.lastDisconnectReason ?: state.statusMessage
+        else -> state.statusMessage
+    }
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.elevatedCardColors(
@@ -3309,7 +3545,7 @@ private fun DeviceStatusCard(
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    state.currentDevice?.name ?: "No VOLTRA Connected",
+                    displayName,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -3324,6 +3560,13 @@ private fun DeviceStatusCard(
                     "Battery ${state.reading.batteryPercent?.let { "$it%" } ?: "unknown"}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    protocolText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 if (state.connectionState.hasActiveGattSession()) {
                     OutlinedButton(onClick = onDisconnect) {
@@ -3364,6 +3607,7 @@ private fun BatteryGauge(percent: Int?) {
 @Composable
 private fun ModeGrid(
     controlReady: Boolean,
+    disabledDetail: String,
     isWideLayout: Boolean,
     onWeightTraining: () -> Unit,
     onResistanceBand: () -> Unit,
@@ -3374,14 +3618,16 @@ private fun ModeGrid(
     onRowing: () -> Unit,
 ) {
     val columns = if (isWideLayout) 3 else 2
+    val detail = if (controlReady) "" else disabledDetail
     val mainModes = listOf(
-        ModeTileSpec("Weight Training", ModeIconKind.WEIGHT_TRAINING, if (controlReady) "" else "Connect to enable", controlReady, onWeightTraining),
-        ModeTileSpec("Resistance Band", ModeIconKind.RESISTANCE_BAND, if (controlReady) "" else "Connect to enable", controlReady, onResistanceBand),
-        ModeTileSpec("Damper", ModeIconKind.DAMPER, if (controlReady) "" else "Connect to enable", controlReady, onDamper),
-        ModeTileSpec("Isokinetic", ModeIconKind.ISOKINETIC, if (controlReady) "" else "Connect to enable", controlReady, onIsokinetic),
-        ModeTileSpec("Isometric Test", ModeIconKind.ISOMETRIC_TEST, if (controlReady) "" else "Connect to enable", controlReady, onIsometric),
-        ModeTileSpec("Custom Curve", ModeIconKind.CUSTOM_CURVE, if (controlReady) "" else "Connect to enable", controlReady, onCustomCurve),
-        ModeTileSpec("Rowing", ModeIconKind.ROWING, if (controlReady) "" else "Connect to enable", controlReady, onRowing),
+        ModeTileSpec("Weight Training", ModeIconKind.WEIGHT_TRAINING, detail, controlReady, onWeightTraining),
+        ModeTileSpec("Resistance Band", ModeIconKind.RESISTANCE_BAND, detail, controlReady, onResistanceBand),
+        ModeTileSpec("Damper", ModeIconKind.DAMPER, detail, controlReady, onDamper),
+        ModeTileSpec("Isokinetic", ModeIconKind.ISOKINETIC, detail, controlReady, onIsokinetic),
+        ModeTileSpec("Isometric", ModeIconKind.ISOMETRIC_TEST, detail, controlReady, onIsometric),
+        ModeTileSpec("Custom Curve", ModeIconKind.CUSTOM_CURVE, detail, controlReady, onCustomCurve),
+        ModeTileSpec("Cardio", ModeIconKind.ROWING, detail, controlReady, onRowing),
+        ModeTileSpec("Sled Pull", ModeIconKind.SLED_PULL, "Beta capture needed", false) {},
     )
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -3421,6 +3667,7 @@ private enum class ModeIconKind {
     ISOMETRIC_TEST,
     CUSTOM_CURVE,
     ROWING,
+    SLED_PULL,
 }
 
 @Composable
@@ -3622,6 +3869,14 @@ private fun ModeGlyph(
                 drawLine(color, Offset(size.width * 0.47f, size.height * 0.52f), Offset(size.width * 0.36f, size.height * 0.66f), strokeWidth = stroke, cap = StrokeCap.Round)
                 drawLine(color, Offset(size.width * 0.56f, size.height * 0.56f), Offset(size.width * 0.7f, size.height * 0.74f), strokeWidth = stroke, cap = StrokeCap.Round)
                 drawLine(color, Offset(size.width * 0.58f, size.height * 0.46f), Offset(size.width * 0.8f, size.height * 0.28f), strokeWidth = stroke, cap = StrokeCap.Round)
+            }
+            ModeIconKind.SLED_PULL -> {
+                drawLine(color, Offset(size.width * 0.2f, size.height * 0.72f), Offset(size.width * 0.78f, size.height * 0.72f), strokeWidth = stroke, cap = StrokeCap.Round)
+                drawLine(color, Offset(size.width * 0.28f, size.height * 0.58f), Offset(size.width * 0.2f, size.height * 0.72f), strokeWidth = stroke, cap = StrokeCap.Round)
+                drawLine(color, Offset(size.width * 0.68f, size.height * 0.58f), Offset(size.width * 0.78f, size.height * 0.72f), strokeWidth = stroke, cap = StrokeCap.Round)
+                drawLine(color, Offset(size.width * 0.3f, size.height * 0.52f), Offset(size.width * 0.68f, size.height * 0.52f), strokeWidth = stroke, cap = StrokeCap.Round)
+                drawLine(color, Offset(size.width * 0.78f, size.height * 0.72f), Offset(size.width * 0.88f, size.height * 0.46f), strokeWidth = stroke, cap = StrokeCap.Round)
+                drawCircle(color = color, radius = stroke * 0.5f, center = Offset(size.width * 0.88f, size.height * 0.42f))
             }
         }
     }
@@ -4264,6 +4519,7 @@ private fun DamperModeCard(
     onOpenSettings: () -> Unit,
     onLevelChange: (Double) -> Unit,
     onLoad: () -> Unit,
+    onDirectLoad: () -> Unit,
     onUnload: () -> Unit,
     onTriggerCableLength: () -> Unit,
     cableLengthEnabled: Boolean,
@@ -4403,15 +4659,17 @@ private fun DamperModeCard(
                                 Text("Exit Mode")
                             }
                             FilledTonalButton(
-                                onClick = onUnload,
-                                enabled = controlReady,
+                                onClick = {
+                                    if (isLoaded) onUnload() else onLoad()
+                                },
+                                enabled = controlReady && (isLoaded || canLoad),
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.filledTonalButtonColors(
                                     containerColor = accent.accentContainer,
                                     contentColor = accent.onAccentContainer,
                                 ),
                             ) {
-                                Text("Unload")
+                                Text(if (isLoaded) "Unload" else "Load")
                             }
                         }
                         OutlinedButton(
@@ -4423,7 +4681,7 @@ private fun DamperModeCard(
                         }
                         HoldToLoadButton(
                             enabled = controlReady && canLoad,
-                            onLoad = onLoad,
+                            onLoad = onDirectLoad,
                         )
                     }
                 }
@@ -4486,15 +4744,17 @@ private fun DamperModeCard(
                         Text("Exit Mode")
                     }
                     FilledTonalButton(
-                        onClick = onUnload,
-                        enabled = controlReady,
+                        onClick = {
+                            if (isLoaded) onUnload() else onLoad()
+                        },
+                        enabled = controlReady && (isLoaded || canLoad),
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.filledTonalButtonColors(
                             containerColor = accent.accentContainer,
                             contentColor = accent.onAccentContainer,
                         ),
                     ) {
-                        Text("Unload")
+                        Text(if (isLoaded) "Unload" else "Load")
                     }
                 }
                 OutlinedButton(
@@ -4506,7 +4766,7 @@ private fun DamperModeCard(
                 }
                 HoldToLoadButton(
                     enabled = controlReady && canLoad,
-                    onLoad = onLoad,
+                    onLoad = onDirectLoad,
                 )
             }
             PowerWorkoutHistoryList(history)
@@ -4534,6 +4794,7 @@ private fun IsokineticModeCard(
     wideLayout: Boolean,
     onSelectTargetSpeedIndex: (Int) -> Unit,
     onLoad: () -> Unit,
+    onDirectLoad: () -> Unit,
     onUnload: () -> Unit,
     onTriggerCableLength: () -> Unit,
     cableLengthEnabled: Boolean,
@@ -4696,15 +4957,17 @@ private fun IsokineticModeCard(
                                 Text("Exit Mode")
                             }
                             FilledTonalButton(
-                                onClick = onUnload,
-                                enabled = controlReady,
+                                onClick = {
+                                    if (isLoaded) onUnload() else onLoad()
+                                },
+                                enabled = controlReady && (isLoaded || canLoad),
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.filledTonalButtonColors(
                                     containerColor = accent.accentContainer,
                                     contentColor = accent.onAccentContainer,
                                 ),
                             ) {
-                                Text("Unload")
+                                Text(if (isLoaded) "Unload" else "Load")
                             }
                         }
                         OutlinedButton(
@@ -4716,7 +4979,7 @@ private fun IsokineticModeCard(
                         }
                         HoldToLoadButton(
                             enabled = controlReady && canLoad,
-                            onLoad = onLoad,
+                            onLoad = onDirectLoad,
                         )
                     }
                 }
@@ -4793,15 +5056,17 @@ private fun IsokineticModeCard(
                         Text("Exit Mode")
                     }
                     FilledTonalButton(
-                        onClick = onUnload,
-                        enabled = controlReady,
+                        onClick = {
+                            if (isLoaded) onUnload() else onLoad()
+                        },
+                        enabled = controlReady && (isLoaded || canLoad),
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.filledTonalButtonColors(
                             containerColor = accent.accentContainer,
                             contentColor = accent.onAccentContainer,
                         ),
                     ) {
-                        Text("Unload")
+                        Text(if (isLoaded) "Unload" else "Load")
                     }
                 }
                 OutlinedButton(
@@ -4813,7 +5078,7 @@ private fun IsokineticModeCard(
                 }
                 HoldToLoadButton(
                     enabled = controlReady && canLoad,
-                    onLoad = onLoad,
+                    onLoad = onDirectLoad,
                 )
             }
             PowerWorkoutHistoryList(history)
@@ -4831,6 +5096,8 @@ private fun IsometricTestCard(
     waveformSamplesN: List<Double>,
     maxForceLb: Double?,
     maxDurationSeconds: Int?,
+    metricsType: Int?,
+    bodyWeightLb: Double?,
     isLoaded: Boolean,
     controlReady: Boolean,
     canLoad: Boolean,
@@ -4839,8 +5106,10 @@ private fun IsometricTestCard(
     reps: Int?,
     phase: String?,
     wideLayout: Boolean,
+    cableLengthEnabled: Boolean,
     onLoad: () -> Unit,
     onUnload: () -> Unit,
+    onTriggerCableLength: () -> Unit,
     onExitWorkout: () -> Unit,
 ) {
     val accent = LocalControlAccent.current
@@ -4905,14 +5174,6 @@ private fun IsometricTestCard(
 
     val computedMetrics = computeIsometricMetrics(samples)
     val hasTraceMetrics = samples.size >= 2
-    val averageSampleStepMillis = if (samples.size > 1) {
-        samples.zipWithNext { previous, next ->
-            (next.elapsedMillis - previous.elapsedMillis).coerceAtLeast(0L)
-        }.average()
-    } else {
-        null
-    }
-    val hasDenseWaveform = averageSampleStepMillis != null && averageSampleStepMillis <= 25.0
     val hasWaveformTrace = samples.isNotEmpty()
     val preferCompletedSummary =
         currentForceN == null &&
@@ -4952,9 +5213,25 @@ private fun IsometricTestCard(
     val helperStatus = when {
         isLoaded -> "Pull against the VOLTRA to capture live force."
         hasCompletedSummary -> "Last completed test is shown below. Load again to start a new attempt."
-        canLoad || canRequestLoad -> "The VOLTRA is already in Isometric ready. Pull to start, or tap Refresh if the live stream misses."
+        canLoad || canRequestLoad -> "Ready to load."
         else -> "Waiting for the VOLTRA to enter Isometric ready."
     }
+    val settingsSummary = buildList {
+        maxForceLb?.roundToInt()?.let { add("Force limit $it lb") }
+        maxDurationSeconds?.let { add("Timer limit ${it}s") }
+        metricsType?.let { add("Metrics ${formatIsometricMetricsTypeLabel(it)}") }
+        bodyWeightLb?.let { add("Body weight ${formatWeightValue(it)} lb") }
+        add(helperStatus)
+    }.joinToString(" • ")
+    val resultPeakForceText = displayedPeakForce?.roundToInt()?.let { "$it N" } ?: "--"
+    val resultTimeText = displayedElapsedMillis?.let(::formatElapsedClock) ?: "--:--"
+    val resultRfd50Text = computedMetrics.rfd50Ns?.let(::formatTwoDecimals)?.let { "$it N/s" } ?: "--"
+    val resultRfdText = computedMetrics.rfd100Ns?.let(::formatTwoDecimals)?.let { "$it N/s" } ?: "--"
+    val resultRfd150Text = computedMetrics.rfd150Ns?.let(::formatTwoDecimals)?.let { "$it N/s" } ?: "--"
+    val resultRfd200Text = computedMetrics.rfd200Ns?.let(::formatTwoDecimals)?.let { "$it N/s" } ?: "--"
+    val resultPeakRfdText = computedMetrics.peakRfd100Ns?.let(::formatTwoDecimals)?.let { "$it N/s" } ?: "--"
+    val resultTimeToPeakText = computedMetrics.timeToPeakMillis?.let(::formatSecondsClock) ?: "--"
+    val resultImpulseText = computedMetrics.impulse100Ns?.let(::formatTwoDecimals)?.let { "$it N*s" } ?: "--"
 
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -4992,13 +5269,28 @@ private fun IsometricTestCard(
                     } else {
                         controlReady && (canLoad || canRequestLoad)
                     },
-                    label = { Text(if (isLoaded) "Weight Off" else "Refresh") },
+                    label = { Text(if (isLoaded) "Weight Off" else "Load Weight") },
                     colors = AssistChipDefaults.assistChipColors(
                         containerColor = accent.accentContainer,
                         labelColor = accent.onAccentContainer,
                         disabledContainerColor = accent.accentContainer.copy(alpha = 0.45f),
                         disabledLabelColor = accent.onAccentContainer.copy(alpha = 0.7f),
                     ),
+                )
+            }
+            if (!wideLayout) {
+                IsometricActionButtons(
+                    isLoaded = isLoaded,
+                    controlReady = controlReady,
+                    canLoad = canLoad,
+                    canRequestLoad = canRequestLoad,
+                    cableLengthEnabled = cableLengthEnabled,
+                    accent = accent,
+                    wideLayout = false,
+                    onLoad = onLoad,
+                    onUnload = onUnload,
+                    onTriggerCableLength = onTriggerCableLength,
+                    onExitWorkout = onExitWorkout,
                 )
             }
             if (wideLayout) {
@@ -5074,11 +5366,7 @@ private fun IsometricTestCard(
                                     )
                                     IsometricMetricCell(
                                         title = "RFD 0-100ms",
-                                        value = if (hasDenseWaveform) {
-                                            computedMetrics.rfd100Ns?.let(::formatTwoDecimals)?.let { "$it N/s" }
-                                        } else {
-                                            null
-                                        } ?: "--",
+                                        value = resultRfdText,
                                         valueColor = Color(0xFF8EE86D),
                                         modifier = Modifier.weight(1f),
                                     )
@@ -5089,66 +5377,52 @@ private fun IsometricTestCard(
                                 ) {
                                     IsometricMetricCell(
                                         title = "Time To Peak",
-                                        value = if (hasDenseWaveform) {
-                                            computedMetrics.timeToPeakMillis?.let(::formatSecondsClock)
-                                        } else {
-                                            null
-                                        } ?: "--",
+                                        value = resultTimeToPeakText,
                                         valueColor = Color(0xFF67A9FF),
                                         modifier = Modifier.weight(1f),
                                     )
                                     IsometricMetricCell(
-                                        title = "Impulse 0-100ms",
-                                        value = if (hasDenseWaveform) {
-                                            computedMetrics.impulse100Ns?.let(::formatTwoDecimals)?.let { "$it N*s" }
-                                        } else {
-                                            null
-                                        } ?: "--",
+                                        title = "Peak RFD 100ms",
+                                        value = resultPeakRfdText,
                                         valueColor = Color(0xFFFF5C8A),
                                         modifier = Modifier.weight(1f),
                                     )
                                 }
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                                 Text(
-                                    buildList {
-                                        maxForceLb?.roundToInt()?.let { add("Force limit $it lb") }
-                                        maxDurationSeconds?.let { add("Timer limit ${it}s") }
-                                        add(helperStatus)
-                                    }.joinToString(" • "),
+                                    settingsSummary,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                                IsometricResultsSection(
+                                    hasCompletedSummary = hasCompletedSummary,
+                                    peakForceText = resultPeakForceText,
+                                    timeText = resultTimeText,
+                                    rfdText = resultRfdText,
+                                    peakRfdText = resultPeakRfdText,
+                                    rfd50Text = resultRfd50Text,
+                                    rfd150Text = resultRfd150Text,
+                                    rfd200Text = resultRfd200Text,
+                                    timeToPeakText = resultTimeToPeakText,
+                                    impulseText = resultImpulseText,
+                                    accent = accent,
+                                )
                             }
                         }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            OutlinedButton(
-                                onClick = onExitWorkout,
-                                enabled = controlReady,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Text("Exit Mode")
-                            }
-                            FilledTonalButton(
-                                onClick = {
-                                    if (isLoaded) onUnload() else onLoad()
-                                },
-                                enabled = if (isLoaded) {
-                                    controlReady
-                                } else {
-                                    controlReady && (canLoad || canRequestLoad)
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = accent.accentContainer,
-                                    contentColor = accent.onAccentContainer,
-                                ),
-                            ) {
-                                Text(if (isLoaded) "Finish" else "Refresh")
-                            }
-                        }
+                        IsometricActionButtons(
+                            isLoaded = isLoaded,
+                            controlReady = controlReady,
+                            canLoad = canLoad,
+                            canRequestLoad = canRequestLoad,
+                            cableLengthEnabled = cableLengthEnabled,
+                            accent = accent,
+                            wideLayout = true,
+                            onLoad = onLoad,
+                            onUnload = onUnload,
+                            onTriggerCableLength = onTriggerCableLength,
+                            onExitWorkout = onExitWorkout,
+                        )
                         WorkoutTelemetryStrip(
                             sets = sets,
                             reps = reps,
@@ -5211,11 +5485,7 @@ private fun IsometricTestCard(
                                 )
                                 IsometricMetricCell(
                                     title = "RFD 0-100ms",
-                        value = if (hasDenseWaveform) {
-                            computedMetrics.rfd100Ns?.let(::formatTwoDecimals)?.let { "$it N/s" }
-                        } else {
-                            null
-                        } ?: "--",
+                                    value = resultRfdText,
                                     valueColor = Color(0xFF8EE86D),
                                     modifier = Modifier.weight(1f),
                                 )
@@ -5226,21 +5496,13 @@ private fun IsometricTestCard(
                             ) {
                                 IsometricMetricCell(
                                     title = "Time To Peak",
-                        value = if (hasDenseWaveform) {
-                            computedMetrics.timeToPeakMillis?.let(::formatSecondsClock)
-                        } else {
-                            null
-                        } ?: "--",
+                                    value = resultTimeToPeakText,
                                     valueColor = Color(0xFF67A9FF),
                                     modifier = Modifier.weight(1f),
                                 )
                                 IsometricMetricCell(
-                                    title = "Impulse 0-100ms",
-                        value = if (hasDenseWaveform) {
-                            computedMetrics.impulse100Ns?.let(::formatTwoDecimals)?.let { "$it N*s" }
-                        } else {
-                            null
-                        } ?: "--",
+                                    title = "Peak RFD 100ms",
+                                    value = resultPeakRfdText,
                                     valueColor = Color(0xFFFF5C8A),
                                     modifier = Modifier.weight(1f),
                                 )
@@ -5248,53 +5510,240 @@ private fun IsometricTestCard(
                         }
                     }
                     Text(
-                        buildList {
-                            maxForceLb?.roundToInt()?.let { add("Force limit $it lb") }
-                            maxDurationSeconds?.let { add("Timer limit ${it}s") }
-                            add(helperStatus)
-                        }.joinToString(" • "),
+                        settingsSummary,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    IsometricResultsSection(
+                        hasCompletedSummary = hasCompletedSummary,
+                        peakForceText = resultPeakForceText,
+                        timeText = resultTimeText,
+                        rfdText = resultRfdText,
+                        peakRfdText = resultPeakRfdText,
+                        rfd50Text = resultRfd50Text,
+                        rfd150Text = resultRfd150Text,
+                        rfd200Text = resultRfd200Text,
+                        timeToPeakText = resultTimeToPeakText,
+                        impulseText = resultImpulseText,
+                        accent = accent,
+                    )
                 }
+            }
+            if (!wideLayout) {
+                WorkoutTelemetryStrip(
+                    sets = sets,
+                    reps = reps,
+                    phase = phase,
+                    status = helperStatus,
+                    isLoaded = isLoaded,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun IsometricResultsSection(
+    hasCompletedSummary: Boolean,
+    peakForceText: String,
+    timeText: String,
+    rfdText: String,
+    peakRfdText: String,
+    rfd50Text: String,
+    rfd150Text: String,
+    rfd200Text: String,
+    timeToPeakText: String,
+    impulseText: String,
+    accent: ControlAccentPalette,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ModeSectionTitle("Results (${if (hasCompletedSummary) 1 else 0})")
+        if (!hasCompletedSummary) {
+            Text(
+                "Completed tests will appear here after the device returns a summary.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                IsometricMetricCell(
+                    title = "Peak Force",
+                    value = peakForceText,
+                    valueColor = accent.accent,
+                    modifier = Modifier.weight(1f),
+                )
+                IsometricMetricCell(
+                    title = "Time",
+                    value = timeText,
+                    valueColor = Color(0xFFFFE45C),
+                    modifier = Modifier.weight(1f),
+                )
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                OutlinedButton(
-                    onClick = onExitWorkout,
-                    enabled = controlReady,
+                IsometricMetricCell(
+                    title = "RFD 0-100ms",
+                    value = rfdText,
+                    valueColor = Color(0xFF8EE86D),
                     modifier = Modifier.weight(1f),
-                ) {
-                    Text("Exit Mode")
-                }
-                FilledTonalButton(
-                    onClick = {
-                        if (isLoaded) onUnload() else onLoad()
-                    },
-                    enabled = if (isLoaded) {
-                        controlReady
-                    } else {
-                        controlReady && (canLoad || canRequestLoad)
-                    },
+                )
+                IsometricMetricCell(
+                    title = "Peak RFD 100ms",
+                    value = peakRfdText,
+                    valueColor = Color(0xFFFF5C8A),
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = accent.accentContainer,
-                        contentColor = accent.onAccentContainer,
-                    ),
-                ) {
-                    Text(if (isLoaded) "Finish" else "Refresh")
-                }
+                )
             }
-            WorkoutTelemetryStrip(
-                sets = sets,
-                reps = reps,
-                phase = phase,
-                status = helperStatus,
-                isLoaded = isLoaded,
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                IsometricMetricCell(
+                    title = "RFD 0-50ms",
+                    value = rfd50Text,
+                    valueColor = Color(0xFF8EE86D),
+                    modifier = Modifier.weight(1f),
+                )
+                IsometricMetricCell(
+                    title = "RFD 0-150ms",
+                    value = rfd150Text,
+                    valueColor = Color(0xFF8EE86D),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                IsometricMetricCell(
+                    title = "RFD 0-200ms",
+                    value = rfd200Text,
+                    valueColor = Color(0xFF8EE86D),
+                    modifier = Modifier.weight(1f),
+                )
+                IsometricMetricCell(
+                    title = "Time To Peak",
+                    value = timeToPeakText,
+                    valueColor = Color(0xFF67A9FF),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            IsometricMetricCell(
+                title = "Impulse 0-100ms",
+                value = impulseText,
+                valueColor = Color(0xFFFF5C8A),
+                modifier = Modifier.fillMaxWidth(),
             )
         }
+    }
+}
+
+@Composable
+private fun IsometricActionButtons(
+    isLoaded: Boolean,
+    controlReady: Boolean,
+    canLoad: Boolean,
+    canRequestLoad: Boolean,
+    cableLengthEnabled: Boolean,
+    accent: ControlAccentPalette,
+    wideLayout: Boolean,
+    onLoad: () -> Unit,
+    onUnload: () -> Unit,
+    onTriggerCableLength: () -> Unit,
+    onExitWorkout: () -> Unit,
+) {
+    val loadEnabled = if (isLoaded) {
+        controlReady
+    } else {
+        controlReady && (canLoad || canRequestLoad)
+    }
+    val loadLabel = if (isLoaded) "Finish" else "Load Weight"
+    val loadAction = {
+        if (isLoaded) onUnload() else onLoad()
+    }
+    if (wideLayout) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = onExitWorkout,
+                enabled = controlReady,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Exit Mode", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            OutlinedButton(
+                onClick = onTriggerCableLength,
+                enabled = cableLengthEnabled,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Cable Length", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            FilledTonalButton(
+                onClick = loadAction,
+                enabled = loadEnabled,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = accent.accentContainer,
+                    contentColor = accent.onAccentContainer,
+                ),
+            ) {
+                Text(loadLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        return
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = onExitWorkout,
+                enabled = controlReady,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Exit Mode", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            OutlinedButton(
+                onClick = onTriggerCableLength,
+                enabled = cableLengthEnabled,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Cable Length", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        FilledTonalButton(
+            onClick = loadAction,
+            enabled = loadEnabled,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = accent.accentContainer,
+                contentColor = accent.onAccentContainer,
+            ),
+        ) {
+            Text(loadLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+private fun formatIsometricMetricsTypeLabel(type: Int): String {
+    return when (type) {
+        0 -> "Force"
+        1 -> "Weight"
+        else -> type.toString()
     }
 }
 
@@ -5457,6 +5906,8 @@ private const val ISOMETRIC_EXIT_REENTRY_GRACE_MILLIS = 4_000L
 
 @Composable
 private fun RowingModeCard(
+    modeTitle: String,
+    selectedCardioMode: ControlModeUi,
     status: String,
     distanceMeters: Double?,
     elapsedMillis: Long?,
@@ -5473,6 +5924,8 @@ private fun RowingModeCard(
     isLoaded: Boolean,
     controlReady: Boolean,
     canLoad: Boolean,
+    onSelectRowing: () -> Unit,
+    onSelectSki: () -> Unit,
     onResistanceLevelChange: (Double) -> Unit,
     onSimulatedWearLevelChange: (Double) -> Unit,
     onLoad: (Int?) -> Unit,
@@ -5480,9 +5933,13 @@ private fun RowingModeCard(
     onExitWorkout: () -> Unit,
 ) {
     val accent = LocalControlAccent.current
-    val rowDistanceOptions = remember {
+    val isSki = selectedCardioMode == ControlModeUi.SKI
+    val activityNoun = if (isSki) "ski" else "row"
+    val startActionLabel = if (isSki) "Start Ski" else "Start Row"
+    val justActivityLabel = if (isSki) "Just Ski" else "Just Row"
+    val rowDistanceOptions = remember(isSki) {
         listOf(
-            RowDistanceOption(null, "Just Row"),
+            RowDistanceOption(null, justActivityLabel),
             RowDistanceOption(50, "50 m"),
             RowDistanceOption(100, "100 m"),
             RowDistanceOption(500, "500 m"),
@@ -5517,24 +5974,29 @@ private fun RowingModeCard(
         distanceSamplesMeters.isNotEmpty() ||
         forceSamplesLb.isNotEmpty()
     val hasForceTelemetry = driveForceLb != null || forceSamplesLb.isNotEmpty()
+    val canStartSelectedCardio = controlReady && (!isSki || isLoaded)
+    val rowSettingsEnabled = controlReady && !isSki
     val helperText = when {
-        targetReached -> "Target reached. Finish on the VOLTRA or app before starting another row."
+        targetReached -> "Target reached. Finish on the VOLTRA or app before starting another $activityNoun."
+        isSki && !isLoaded ->
+            "Ski selector is present in the stock app, but Android needs a captured selector frame before it can start Ski."
         isLoaded && selectedTargetLabel != null && selectedSplitLabel != null ->
-            "$selectedTargetLabel row is live with $selectedSplitLabel."
-        isLoaded && selectedTargetLabel != null -> "$selectedTargetLabel row is live from the VOLTRA stream."
-        isLoaded -> "Just Row is live. Pull the cable and watch distance, pace, and drive force settle in."
-        hasTelemetry && selectedTargetLabel != null -> "Last row is shown below against the $selectedTargetLabel target."
-        hasTelemetry -> "Last row is shown below. Start Row again before another row."
+            "$selectedTargetLabel $activityNoun is live with $selectedSplitLabel."
+        isLoaded && selectedTargetLabel != null -> "$selectedTargetLabel $activityNoun is live from the VOLTRA stream."
+        isLoaded -> "$justActivityLabel is live. Pull the cable and watch distance, pace, and drive force settle in."
+        hasTelemetry && selectedTargetLabel != null -> "Last $activityNoun is shown below against the $selectedTargetLabel target."
+        hasTelemetry -> "Last $activityNoun is shown below. Start again before another $activityNoun."
         selectedTargetLabel != null && selectedSplitLabel != null ->
             "Start $selectedTargetLabel with $selectedSplitLabel."
         selectedTargetLabel != null -> "Start $selectedTargetLabel from Android."
-        canLoad -> "Start Just Row from Android. If the VOLTRA is already rowing, this reconnects the live stream."
-        else -> "Start Just Row from Android. If the VOLTRA is already rowing, this reconnects the live stream."
+        canLoad -> "Start $justActivityLabel from Android. If the VOLTRA is already in Cardio, this reconnects the live stream."
+        else -> "Start $justActivityLabel from Android. If the VOLTRA is already in Cardio, this reconnects the live stream."
     }
     val primaryActionLabel = when {
         isLoaded -> "Finish"
-        hasTelemetry -> "Start Row"
-        else -> "Start Row"
+        isSki -> "Ski Capture Needed"
+        hasTelemetry -> startActionLabel
+        else -> startActionLabel
     }
 
     ElevatedCard(
@@ -5554,7 +6016,7 @@ private fun RowingModeCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Rowing", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Cardio", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
                         status,
                         style = MaterialTheme.typography.labelMedium,
@@ -5565,8 +6027,8 @@ private fun RowingModeCard(
                 }
                 AssistChip(
                     onClick = { if (isLoaded) onUnload() else onLoad(selectedTargetMeters) },
-                    enabled = controlReady,
-                    label = { Text(if (isLoaded) "Finish" else "Start Row") },
+                    enabled = canStartSelectedCardio,
+                    label = { Text(primaryActionLabel) },
                     colors = AssistChipDefaults.assistChipColors(
                         containerColor = accent.accentContainer,
                         labelColor = accent.onAccentContainer,
@@ -5576,8 +6038,26 @@ private fun RowingModeCard(
                 )
             }
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = selectedCardioMode == ControlModeUi.ROWING,
+                    onClick = onSelectRowing,
+                    enabled = controlReady,
+                    label = { Text("Row") },
+                )
+                FilterChip(
+                    selected = selectedCardioMode == ControlModeUi.SKI,
+                    onClick = onSelectSki,
+                    enabled = controlReady,
+                    label = { Text("Ski") },
+                )
+            }
+
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                ModeSectionTitle("Row Setup")
+                ModeSectionTitle("$modeTitle Setup")
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -5615,8 +6095,19 @@ private fun RowingModeCard(
                     )
                 }
             }
+            FilledTonalButton(
+                onClick = { if (isLoaded) onUnload() else onLoad(selectedTargetMeters) },
+                enabled = canStartSelectedCardio,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = accent.accentContainer,
+                    contentColor = accent.onAccentContainer,
+                ),
+            ) {
+                Text(primaryActionLabel)
+            }
 
-            ModeSectionTitle("Row Settings")
+            ModeSectionTitle("$modeTitle Settings")
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -5625,14 +6116,14 @@ private fun RowingModeCard(
                     label = "Resistance",
                     value = resistanceLevel,
                     onValueChange = onResistanceLevelChange,
-                    enabled = controlReady,
+                    enabled = rowSettingsEnabled,
                     modifier = Modifier.weight(1f),
                 )
                 RowingLevelControl(
                     label = "Simulated Wear",
                     value = simulatedWearLevel,
                     onValueChange = onSimulatedWearLevelChange,
-                    enabled = controlReady,
+                    enabled = rowSettingsEnabled,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -5757,20 +6248,9 @@ private fun RowingModeCard(
                 OutlinedButton(
                     onClick = onExitWorkout,
                     enabled = controlReady,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Exit Mode")
-                }
-                FilledTonalButton(
-                    onClick = { if (isLoaded) onUnload() else onLoad(selectedTargetMeters) },
-                    enabled = controlReady,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = accent.accentContainer,
-                        contentColor = accent.onAccentContainer,
-                    ),
-                ) {
-                    Text(primaryActionLabel)
                 }
             }
         }
@@ -5907,6 +6387,20 @@ private fun CustomCurveCard(
     onExitWorkout: () -> Unit,
 ) {
     val accent = LocalControlAccent.current
+    fun curveSignature(points: List<Float>, minLb: Int, maxLb: Int, romIn: Int): String {
+        return buildString {
+            append(minLb)
+            append(':')
+            append(maxLb)
+            append(':')
+            append(romIn)
+            points.forEach { point ->
+                append(':')
+                append((point.coerceIn(0f, 1f) * 1_000f).roundToInt())
+            }
+        }
+    }
+
     var showSavePresetDialog by remember { mutableStateOf(false) }
     var presetNameInput by remember { mutableStateOf("") }
     val curvePoints = remember {
@@ -5918,6 +6412,39 @@ private fun CustomCurveCard(
     var resistanceMinLb by remember { mutableStateOf(VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RESISTANCE_MIN_LB) }
     var resistanceLimitLb by remember { mutableStateOf(VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RESISTANCE_LIMIT_LB) }
     var rangeOfMotionIn by remember { mutableStateOf(VoltraControlFrames.DEFAULT_CUSTOM_CURVE_RANGE_OF_MOTION_IN) }
+    var lastAppliedCurveSignature by remember { mutableStateOf<String?>(null) }
+    val currentCurveSignature = curveSignature(
+        curvePoints.toList(),
+        resistanceMinLb,
+        resistanceLimitLb,
+        rangeOfMotionIn,
+    )
+    val curveApplyState = when (lastAppliedCurveSignature) {
+        currentCurveSignature -> "Applied"
+        null -> "Ready to apply"
+        else -> "Pending changes"
+    }
+    fun loadCurveIntoEditor(points: List<Float>, minLb: Int, maxLb: Int, romIn: Int) {
+        val normalizedPoints = points
+            .take(VoltraControlFrames.CUSTOM_CURVE_POINT_COUNT)
+            .let { selected ->
+                if (selected.size == VoltraControlFrames.CUSTOM_CURVE_POINT_COUNT) {
+                    selected
+                } else {
+                    selected + VoltraControlFrames.DEFAULT_CUSTOM_CURVE_POINTS.drop(selected.size)
+                }
+            }
+        curvePoints.clear()
+        curvePoints.addAll(normalizedPoints)
+        resistanceMinLb = minLb
+        resistanceLimitLb = maxLb
+        rangeOfMotionIn = romIn
+    }
+    fun applyCurve(points: List<Float>, minLb: Int, maxLb: Int, romIn: Int) {
+        onApplyCurve(points, minLb, maxLb, romIn)
+        lastAppliedCurveSignature = curveSignature(points, minLb, maxLb, romIn)
+    }
+
     if (showSavePresetDialog) {
         AlertDialog(
             onDismissRequest = { showSavePresetDialog = false },
@@ -6005,10 +6532,43 @@ private fun CustomCurveCard(
             ModeSectionTitle("Curve")
             CustomCurveGraph(
                 points = curvePoints,
-                enabled = controlReady,
+                enabled = true,
                 onPointChange = { index, value -> curvePoints[index] = value },
                 modifier = Modifier.fillMaxWidth().height(150.dp),
             )
+            Text(
+                "$curveApplyState • $resistanceMinLb-$resistanceLimitLb lb • $rangeOfMotionIn in",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = { applyCurve(curvePoints.toList(), resistanceMinLb, resistanceLimitLb, rangeOfMotionIn) },
+                    enabled = controlReady,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = accent.accentContainer,
+                        contentColor = accent.onAccentContainer,
+                        disabledContainerColor = accent.accentContainer.copy(alpha = 0.5f),
+                        disabledContentColor = accent.onAccentContainer.copy(alpha = 0.75f),
+                    ),
+                ) {
+                    Text("Apply Curve")
+                }
+                OutlinedButton(
+                    onClick = {
+                        presetNameInput = ""
+                        showSavePresetDialog = true
+                    },
+                    modifier = Modifier.weight(1f),
+                    enabled = true,
+                ) {
+                    Text("Save")
+                }
+            }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 ModeSectionTitle("Limits")
@@ -6019,7 +6579,7 @@ private fun CustomCurveCard(
                     suffix = "lb",
                     valueRange = VoltraControlFrames.MIN_CUSTOM_CURVE_RESISTANCE_LIMIT_LB..VoltraControlFrames.MAX_CUSTOM_CURVE_RESISTANCE_LIMIT_LB,
                     minimumSpan = VoltraControlFrames.MIN_CUSTOM_CURVE_RESISTANCE_SPAN_LB,
-                    enabled = controlReady,
+                    enabled = true,
                     accent = accent,
                     onValueChange = { min, max ->
                         resistanceMinLb = min
@@ -6031,7 +6591,7 @@ private fun CustomCurveCard(
                     value = rangeOfMotionIn,
                     suffix = "in",
                     valueRange = VoltraControlFrames.MIN_CUSTOM_CURVE_RANGE_OF_MOTION_IN..VoltraControlFrames.MAX_CUSTOM_CURVE_RANGE_OF_MOTION_IN,
-                    enabled = controlReady,
+                    enabled = true,
                     accent = accent,
                     onValueChange = { rangeOfMotionIn = it },
                 )
@@ -6069,7 +6629,7 @@ private fun CustomCurveCard(
                                 value = value,
                                 onValueChange = { curvePoints[index] = it.coerceIn(0f, 1f) },
                                 valueRange = 0f..1f,
-                                enabled = controlReady,
+                                enabled = true,
                                 colors = SliderDefaults.colors(
                                     thumbColor = accent.accent,
                                     activeTrackColor = accent.accent,
@@ -6083,39 +6643,10 @@ private fun CustomCurveCard(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                FilledTonalButton(
-                    onClick = { onApplyCurve(curvePoints.toList(), resistanceMinLb, resistanceLimitLb, rangeOfMotionIn) },
-                    enabled = controlReady,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = accent.accentContainer,
-                        contentColor = accent.onAccentContainer,
-                        disabledContainerColor = accent.accentContainer.copy(alpha = 0.5f),
-                        disabledContentColor = accent.onAccentContainer.copy(alpha = 0.75f),
-                    ),
                 ) {
-                    Text("Apply Curve")
-                }
-                OutlinedButton(
-                    onClick = {
-                        presetNameInput = ""
-                        showSavePresetDialog = true
-                    },
-                    modifier = Modifier.weight(1f),
-                    enabled = controlReady,
-                ) {
-                    Text("Save")
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                OutlinedButton(
-                    onClick = onExitWorkout,
-                    enabled = controlReady,
+                    OutlinedButton(
+                        onClick = onExitWorkout,
+                        enabled = controlReady,
                     modifier = Modifier.weight(1f),
                 ) {
                     Text("Exit Mode")
@@ -6153,22 +6684,34 @@ private fun CustomCurveCard(
                         )
                         TextButton(
                             onClick = {
-                                curvePoints.clear()
-                                curvePoints.addAll(preset.points)
-                                resistanceMinLb = preset.resistanceMinLb
-                                resistanceLimitLb = preset.resistanceLimitLb
-                                rangeOfMotionIn = preset.rangeOfMotionIn
-                                if (controlReady) {
-                                    onApplyCurve(
-                                        preset.points,
-                                        preset.resistanceMinLb,
-                                        preset.resistanceLimitLb,
-                                        preset.rangeOfMotionIn,
-                                    )
-                                }
+                                loadCurveIntoEditor(
+                                    preset.points,
+                                    preset.resistanceMinLb,
+                                    preset.resistanceLimitLb,
+                                    preset.rangeOfMotionIn,
+                                )
                             },
                         ) {
-                            Text("Load")
+                            Text("Edit")
+                        }
+                        TextButton(
+                            onClick = {
+                                loadCurveIntoEditor(
+                                    preset.points,
+                                    preset.resistanceMinLb,
+                                    preset.resistanceLimitLb,
+                                    preset.rangeOfMotionIn,
+                                )
+                                applyCurve(
+                                    preset.points,
+                                    preset.resistanceMinLb,
+                                    preset.resistanceLimitLb,
+                                    preset.rangeOfMotionIn,
+                                )
+                            },
+                            enabled = controlReady,
+                        ) {
+                            Text("Apply")
                         }
                         TextButton(onClick = { onDeletePreset(preset.id) }) {
                             Text("Delete")
@@ -8462,7 +9005,7 @@ private fun HoldToLoadButton(
             ),
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Text(if (enabled) "Hold to Load" else "Load Locked", fontWeight = FontWeight.Bold)
+            Text(if (enabled) "Hold to Direct Load" else "Direct Load Locked", fontWeight = FontWeight.Bold)
         }
     }
 }

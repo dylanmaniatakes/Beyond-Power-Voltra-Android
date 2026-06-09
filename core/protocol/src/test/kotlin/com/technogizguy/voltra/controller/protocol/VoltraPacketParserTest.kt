@@ -7,19 +7,22 @@ import kotlin.test.assertTrue
 
 class VoltraPacketParserTest {
     @Test
-    fun parsesCapturedHandshakeHello() {
+    fun parsesLocalOpenSourceHandshakeHello() {
         val packet = assertNotNull(
-            VoltraPacketParser.parse(
-                "552904c90110000020004f69506164000000000000000000000000000000000084ab1a5f292001ea4f".hexToByteArray(),
-            ),
+            VoltraPacketParser.parse(VoltraOfficialReadOnlyBootstrap.packets.first().bytes),
         )
 
         assertEquals(0x29, packet.declaredLength)
         assertEquals(0x04, packet.packetType)
         assertEquals(0x01, packet.senderId)
         assertEquals(0x10, packet.receiverId)
-        assertEquals(0x4F, packet.commandId)
+        assertEquals(VoltraControlFrames.CMD_READ_DEVICE_NAME, packet.commandId)
         assertTrue(packet.lengthMatches)
+        val helloName = packet.payload
+            .copyOfRange(0, VoltraControlFrames.DEVICE_NAME_MAX_BYTES)
+            .decodeToString()
+            .trimEnd('\u0000')
+        assertEquals("Open Source", helloName)
         assertTrue(packet.shortSummary().contains("cmd=0x4F"))
     }
 

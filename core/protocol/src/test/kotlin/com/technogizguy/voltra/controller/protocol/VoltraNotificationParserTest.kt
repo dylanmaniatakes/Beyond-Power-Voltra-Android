@@ -348,7 +348,7 @@ class VoltraNotificationParserTest {
             nowMillis = 6278L,
         )
 
-        assertEquals("Isometric Test, Loaded", reading.workoutMode)
+        assertEquals("Isometric, Loaded", reading.workoutMode)
         assertEquals(6278L, reading.lastUpdatedMillis)
     }
 
@@ -361,7 +361,7 @@ class VoltraNotificationParserTest {
             nowMillis = 6279L,
         )
 
-        assertEquals("Isometric Test, Ready", reading.workoutMode)
+        assertEquals("Isometric, Ready", reading.workoutMode)
         assertEquals(6279L, reading.lastUpdatedMillis)
     }
 
@@ -390,7 +390,7 @@ class VoltraNotificationParserTest {
             nowMillis = 6282L,
         )
 
-        assertEquals("Isometric Test, Loaded", reading.workoutMode)
+        assertEquals("Isometric, Loaded", reading.workoutMode)
         assertEquals(0x39, reading.appCurrentScreenId)
         assertEquals(0x0108, reading.fitnessOngoingUi)
         assertEquals(6282L, reading.lastUpdatedMillis)
@@ -405,7 +405,7 @@ class VoltraNotificationParserTest {
             nowMillis = 6283L,
         )
 
-        assertEquals("Isometric Test, Loaded", reading.workoutMode)
+        assertEquals("Isometric, Loaded", reading.workoutMode)
         assertEquals(0x39, reading.appCurrentScreenId)
         assertEquals(0x0108, reading.fitnessOngoingUi)
         assertNull(reading.isometricCurrentForceN)
@@ -1147,7 +1147,7 @@ class VoltraNotificationParserTest {
         assertNull(entered.isometricPeakRelativeForcePercent)
         assertNull(entered.isometricElapsedMillis)
         assertTrue(entered.isometricWaveformSamplesN.isEmpty())
-        assertEquals("Isometric Test, Loaded", entered.workoutMode)
+        assertEquals("Isometric, Loaded", entered.workoutMode)
     }
 
     @Test

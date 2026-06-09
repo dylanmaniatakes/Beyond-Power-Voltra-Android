@@ -52,3 +52,15 @@ data class WorkoutHistoryEntry(
     val batteryStartPercent: Int? = null,
     val batteryEndPercent: Int? = null,
 )
+
+data class GitHubUpdateState(
+    val checking: Boolean = false,
+    val latestVersion: String? = null,
+    val latestTag: String? = null,
+    val releaseUrl: String? = null,
+    val apkDownloadUrl: String? = null,
+    val updateAvailable: Boolean = false,
+    val checkedAtMillis: Long? = null,
+    val message: String = "Not checked yet.",
+    val error: String? = null,
+)
